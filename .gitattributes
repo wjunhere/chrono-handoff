@@ -1,0 +1,18 @@
+# 统一换行行为：仓库内一律 LF，检出时按平台
+# 背景：本机 core.autocrlf=true 会在提交时把 LF 转 CRLF，产生大量无意义警告；
+# 且 JSONL 事件日志（虽然不入库）与测试断言对换行敏感。
+* text=auto eol=lf
+
+# 二进制资源不做任何转换
+*.woff2 binary
+*.png binary
+*.jpg binary
+*.ico binary
+
+# Python / 配置明确按 LF
+*.py text eol=lf
+*.toml text eol=lf
+*.json text eol=lf
+*.md text eol=lf
+*.html text eol=lf
+*.css text eol=lf

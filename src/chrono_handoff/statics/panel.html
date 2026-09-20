@@ -1,0 +1,1082 @@
+<!DOCTYPE html>
+<html lang="zh">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>chrono-handoff · cue</title>
+<!-- Fonts are served locally (see webui.py).  The component must render the
+     same on an isolated network as on the open internet, and a hardware cue is
+     exactly the kind of thing that runs on an air-gapped bench. -->
+<style>
+  @font-face{
+    font-family:"Inter";font-style:normal;font-weight:300 700;font-display:swap;
+    src:url("/fonts/inter-latin.woff2") format("woff2");
+    unicode-range:U+0000-00FF,U+0131,U+0152-0153,U+02BB-02BC,U+02C6,U+02DA,U+02DC,
+      U+0304,U+0308,U+0329,U+2000-206F,U+20AC,U+2122,U+2191,U+2193,U+2212,U+2215,
+      U+FEFF,U+FFFD;
+  }
+  @font-face{
+    font-family:"Inter";font-style:normal;font-weight:300 700;font-display:swap;
+    src:url("/fonts/inter-latin-ext.woff2") format("woff2");
+    unicode-range:U+0100-02BA,U+02BD-02C5,U+02C7-02CC,U+02CE-02D7,U+02DD-02FF,
+      U+0304,U+0308,U+0329,U+1D00-1DBF,U+1E00-1E9F,U+1EF2-1EFF,U+2020,U+20A0-20AB,
+      U+20AD-20C0,U+2113,U+2C60-2C7F,U+A720-A7FF;
+  }
+  @font-face{
+    font-family:"JetBrains Mono";font-style:normal;font-weight:400 600;font-display:swap;
+    src:url("/fonts/jbmono-latin.woff2") format("woff2");
+  }
+</style>
+<style>
+    /* ===================================================================
+       Design tokens.  Palette from ui-ux-pro-max "Developer Tool / IDE";
+       style direction "Glassmorphism" (blur 10-20px, 1px light border,
+       layered translucency, deliberate z-depth).
+       =================================================================== */
+    :root{
+      /* window paint colour + opacity: the theme owns the colour, the opacity
+         setting owns the alpha, so the two can never fight */
+      --win-rgb:15,23,42; --win-alpha:1;
+
+      /* elevation ramp -- dark surfaces get LIGHTER as they rise */
+      --bg:#0f172a;          /* canvas          */
+      --bg2:#131c30;         /* chrome bar      */
+      --surface:rgba(27,35,54,.72);   /* inputs / wells   */
+      --card:rgba(27,35,54,.60);      /* the floating card */
+      --card-hi:rgba(51,65,85,.55);   /* raised element    */
+      --line:rgba(148,163,184,.16);   /* hairline border   */
+      --line2:rgba(148,163,184,.26);
+
+      --fg:#f8fafc;
+      --dim:#cbd5e1;         /* secondary text -- 9.8:1 on --bg */
+      --dim2:#94a3b8;        /* muted          -- 5.6:1 on --bg */
+
+      --accent:#60a5fa; --accent-ink:#0b1220;
+      --go:#fbbf24; --go-ink:#2a1c02;
+      --ok:#22c55e; --warn:#ef4444;
+
+      /* glass */
+      --blur:18px; --blur-soft:10px;
+      --glass-edge:rgba(255,255,255,.10);
+      --shadow:0 18px 50px rgba(0,0,0,.55), 0 2px 8px rgba(0,0,0,.35);
+      --shadow-sm:0 4px 14px rgba(0,0,0,.35);
+
+      --r-lg:18px; --r-md:12px; --r-sm:9px;
+      --tb:40px;
+      --dur:.18s;
+      --ease:cubic-bezier(.2,.7,.3,1);
+    }
+    *{box-sizing:border-box;margin:0;padding:0}
+    html{height:100%;overflow:hidden;background:rgb(var(--win-rgb))}
+    body{height:100%;overflow:hidden;color:var(--fg);
+      font:14.5px/1.5 "Inter","Noto Sans SC","Microsoft YaHei UI","Segoe UI",system-ui,-apple-system,sans-serif;
+      background:transparent;
+      -webkit-user-select:none;user-select:none;
+      -webkit-font-smoothing:antialiased;text-rendering:optimizeLegibility;
+      /* Inter is a variable font: let it pick the optical size for large text,
+         and never fake a weight that was not loaded. */
+      font-optical-sizing:auto;font-synthesis:none}
+
+    /* Anything that is clickable gets a pointer (checklist item). */
+    button,input,select,.sw,.grip{cursor:pointer}
+    /* Visible focus for keyboard users on every control. */
+    :focus-visible{outline:2px solid var(--accent);outline-offset:2px;border-radius:6px}
+    @media (prefers-reduced-motion: reduce){
+      *{transition-duration:.01ms!important;animation-duration:.01ms!important}
+    }
+
+    /* ------------------------------------------------------------ shell grid */
+    body.shell{display:grid;grid-template-rows:var(--tb) 1fr;padding:10px;gap:0}
+    /* The card "floats": inset margin + big soft shadow + translucent fill over
+       the real acrylic backdrop behind the window. */
+    body.shell .stage{
+      position:relative;display:flex;flex-direction:column;min-height:0;
+      border-radius:var(--r-lg);
+      background:var(--card);
+      border:1px solid var(--glass-edge);
+      box-shadow:var(--shadow);
+      backdrop-filter:blur(var(--blur)) saturate(150%);
+      -webkit-backdrop-filter:blur(var(--blur)) saturate(150%);
+      overflow:hidden;
+    }
+    /* hairline sheen along the top edge -- reads as a lit glass surface */
+    body.shell .stage::before{
+      content:"";position:absolute;inset:0;border-radius:inherit;pointer-events:none;
+      background:linear-gradient(180deg,rgba(255,255,255,.07),rgba(255,255,255,0) 38%);
+    }
+
+    /* browser-tab mode: same card, centred, no chrome */
+    body:not(.shell){display:flex;align-items:center;justify-content:center;padding:20px}
+    body:not(.shell) .stage{width:min(560px,100%);max-height:100%;overflow:auto;
+      border-radius:var(--r-lg);background:var(--card);border:1px solid var(--glass-edge);
+      box-shadow:var(--shadow);backdrop-filter:blur(var(--blur));-webkit-backdrop-filter:blur(var(--blur))}
+
+    /* ------------------------------------------------------------- title bar */
+    #titlebar{display:none;align-items:center;gap:2px;padding-left:14px;
+      background:transparent;border-bottom:1px solid var(--line);
+      margin:-1px -1px 0;border-radius:var(--r-lg) var(--r-lg) 0 0}
+    body.shell #titlebar{display:flex}
+    #titlebar .drag{flex:1;display:flex;align-items:center;height:100%;min-width:0}
+    #titlebar .name{font-size:12.5px;color:var(--dim2);white-space:nowrap;
+      overflow:hidden;text-overflow:ellipsis;letter-spacing:.01em}
+    #titlebar .name.bad{color:var(--warn)}
+    .wbtn{width:42px;height:100%;border:0;background:transparent;color:var(--dim2);
+      display:grid;place-items:center;border-radius:var(--r-sm);
+      transition:background var(--dur) var(--ease),color var(--dur) var(--ease)}
+    .wbtn:hover{background:var(--card-hi);color:var(--fg)}
+    .wbtn:active{transform:scale(.94)}
+    .wbtn.close:hover{background:var(--warn);color:#fff}
+    .wbtn svg{width:12px;height:12px;stroke:currentColor;stroke-width:1.4;
+      fill:none;stroke-linecap:round}
+
+    /* ---------------------------------------------------------------- panel */
+    .stage{min-height:0;display:flex;flex-direction:column}
+    .panel{flex:1 1 auto;min-height:0;display:grid;
+      grid-template-rows:auto auto auto minmax(0,1fr) auto auto;
+      padding:clamp(11px,2.4vmin,20px) clamp(14px,3.4vmin,28px) clamp(12px,2.6vmin,22px);
+      gap:clamp(6px,1.4vmin,13px);position:relative;z-index:1}
+
+    .head{display:flex;align-items:center;justify-content:space-between;gap:10px;min-width:0}
+    .state{display:flex;align-items:center;gap:8px;font-size:11px;letter-spacing:.13em;
+      text-transform:uppercase;color:var(--dim2);white-space:nowrap;overflow:hidden;
+      text-overflow:ellipsis;font-weight:500}
+    .dot{width:7px;height:7px;border-radius:50%;background:var(--dim2);flex:none;
+      transition:background var(--dur),box-shadow var(--dur)}
+    .dot.live{background:var(--ok);box-shadow:0 0 0 4px rgba(34,197,94,.16)}
+    @keyframes pulse{50%{opacity:.4}}
+    .dot.live{animation:pulse 1.9s var(--ease) infinite}
+    .runid{font:11px/1 "JetBrains Mono","Cascadia Code","Fira Code",ui-monospace,SFMono-Regular,Consolas,"Noto Sans SC",monospace;color:var(--dim2);
+      white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+
+    .instr{font-size:clamp(16px,2.7vmin,24px);font-weight:600;line-height:1.28;
+      letter-spacing:-.01em;overflow:hidden;text-overflow:ellipsis}
+    .instr:empty{display:none}
+    .guide{font-size:clamp(11px,1.5vmin,13px);color:var(--dim2);line-height:1.45}
+    .guide:empty{display:none}
+
+    /* ------------------------------------------------------------ the clock */
+    .clockwrap{display:flex;flex-direction:column;align-items:center;justify-content:center;
+      min-height:0;gap:clamp(3px,1vmin,10px)}
+    #clock{
+      /* Inter (not a mono face) for the countdown: it matches the rest of the
+         UI and reads as a modern dashboard reading.  Still cannot jitter --
+         tabular figures make every digit the same width. */
+      font:600 clamp(56px,24vmin,190px)/0.95 "Inter","Noto Sans SC",system-ui,sans-serif;
+      letter-spacing:-.05em;
+      font-variant-numeric:tabular-nums;font-feature-settings:"tnum" 1,"cv01" 1;
+      color:var(--fg);
+      transition:color .12s var(--ease),text-shadow .12s var(--ease)}
+    #clock.go{color:var(--go);text-shadow:0 0 0.5em rgba(251,191,36,.55)}
+    #clock.tail{color:var(--dim2);font-size:clamp(32px,12vmin,96px)}
+    #clock.ready{color:var(--dim);font-size:clamp(32px,13vmin,100px);font-weight:500}
+    .phase{font-size:clamp(11px,1.55vmin,13.5px);color:var(--dim2);
+      font-variant-numeric:tabular-nums;letter-spacing:.02em;white-space:nowrap}
+
+    /* --------------------------------------------------------------- beats */
+    #grid{display:flex;align-items:center;justify-content:center;
+      gap:clamp(4px,1vmin,9px);height:clamp(28px,6.6vmin,54px);flex:none;
+      padding:0 2px}
+    .cell{flex:1 1 0;min-width:3px;max-width:24px;height:24%;border-radius:99px;
+      background:rgba(148,163,184,.22);
+      transition:background .08s linear,height .08s linear,box-shadow .08s linear}
+    .cell.past{background:rgba(148,163,184,.42)}
+    .cell.now{background:var(--accent);height:74%;
+      box-shadow:0 0 14px rgba(96,165,250,.75)}
+    .cell.go{background:var(--go);height:100%;
+      box-shadow:0 0 20px rgba(251,191,36,.85)}
+
+    /* ------------------------------------------------------------- actions */
+    .actions{display:grid;gap:clamp(7px,1.5vmin,12px)}
+    #press{
+      width:100%;border:1px solid var(--line2);border-radius:var(--r-md);
+      padding:clamp(12px,3.2vmin,26px) 16px;
+      font-size:clamp(15px,2.8vmin,25px);font-weight:600;letter-spacing:.02em;
+      color:var(--fg);background:var(--card-hi);box-shadow:var(--shadow-sm);
+      transition:transform var(--dur) var(--ease),background var(--dur) var(--ease),
+                 color var(--dur) var(--ease),box-shadow var(--dur) var(--ease),
+                 border-color var(--dur) var(--ease)}
+    #press:hover:not(:disabled){background:rgba(71,85,105,.72);border-color:var(--line2);
+      transform:translateY(-1px)}
+    #press:active:not(:disabled){transform:translateY(0) scale(.995)}
+    #press.beat{background:rgba(96,165,250,.22);border-color:rgba(96,165,250,.5)}
+    #press.go{background:linear-gradient(180deg,#fcd34d,#f59e0b);color:var(--go-ink);
+      border-color:#fde68a;box-shadow:0 0 34px rgba(251,191,36,.5),var(--shadow-sm)}
+    #press.hit{background:linear-gradient(180deg,#4ade80,#16a34a);color:#052e16;
+      border-color:#86efac;box-shadow:0 0 28px rgba(34,197,94,.5)}
+    #press:disabled{opacity:.45;box-shadow:none;transform:none;cursor:not-allowed}
+
+    .row{display:flex;gap:clamp(7px,1.5vmin,10px)}
+    .ghost{flex:1;padding:clamp(8px,1.6vmin,12px);border-radius:var(--r-sm);
+      font-size:clamp(11.5px,1.5vmin,13px);font-weight:500;color:var(--dim);
+      background:transparent;border:1px solid var(--line);
+      transition:background var(--dur) var(--ease),color var(--dur) var(--ease),
+                 border-color var(--dur) var(--ease)}
+    .ghost:hover{background:var(--card-hi);color:var(--fg);border-color:var(--line2)}
+
+    /* --------------------------------------------------------------- meter */
+    .meter{border-top:1px solid var(--line);padding-top:clamp(7px,1.3vmin,12px);
+      display:grid;gap:clamp(2px,.6vmin,5px);
+      font-size:clamp(10.5px,1.4vmin,12.5px)}
+    .m{display:flex;justify-content:space-between;align-items:baseline;gap:10px;
+      color:var(--dim2);min-width:0}
+    .m span{flex:1 1 auto;min-width:0;overflow:hidden;text-overflow:ellipsis;
+      white-space:nowrap}
+    .m b{flex:0 1 auto;min-width:0;color:var(--dim);font-weight:500;
+      font-family:"JetBrains Mono","Cascadia Code","Fira Code",ui-monospace,SFMono-Regular,Consolas,"Noto Sans SC",monospace;white-space:nowrap;
+      overflow:hidden;text-overflow:ellipsis;text-align:right}
+    .ok{color:var(--ok)!important} .bad{color:var(--warn)!important}
+
+    /* ------------------------------------------------------------ settings */
+    #settings{display:none;flex:1 1 auto;min-height:0;position:relative;z-index:1}
+    body.settings-open #settings{display:flex}
+    body.settings-open .panel{display:none}
+    .sheet{flex:1;min-height:0;overflow:auto;
+      padding:clamp(13px,2.6vmin,20px) clamp(16px,3.2vmin,26px) clamp(18px,3.2vmin,28px)}
+    .sheet h2{font-size:clamp(13px,2vmin,16px);font-weight:600;margin-bottom:14px;
+      letter-spacing:-.01em}
+    .grp{border-top:1px solid var(--line);padding:13px 0 5px}
+    .grp:first-of-type{border-top:0;padding-top:0}
+    .grp h3{font-size:10.5px;letter-spacing:.14em;text-transform:uppercase;
+      color:var(--dim2);margin-bottom:11px;font-weight:600}
+    .f{display:flex;align-items:center;gap:12px;margin-bottom:10px;
+      font-size:clamp(11.5px,1.5vmin,13.5px)}
+    .f label{flex:1;color:var(--dim)}
+    .f .v{min-width:54px;text-align:right;font-family:"JetBrains Mono","Cascadia Code","Fira Code",ui-monospace,SFMono-Regular,Consolas,"Noto Sans SC",monospace;
+      font-size:.92em;color:var(--dim2)}
+
+    /* range inputs, restyled so they match the glass surfaces */
+    input[type=range]{width:clamp(84px,17vmin,150px);accent-color:var(--accent);
+      background:transparent}
+    input[type=number],input[type=text],select{
+      width:clamp(74px,14vmin,106px);background:var(--surface);color:var(--fg);
+      border:1px solid var(--line);border-radius:var(--r-sm);
+      padding:6px 9px;font-size:.95em;font-family:"JetBrains Mono","Cascadia Code","Fira Code",ui-monospace,SFMono-Regular,Consolas,"Noto Sans SC",monospace;
+      transition:border-color var(--dur) var(--ease),background var(--dur) var(--ease)}
+    input[type=number]:hover,select:hover{border-color:var(--line2)}
+    input[type=number]:focus,select:focus{outline:none;border-color:var(--accent);
+      box-shadow:0 0 0 3px rgba(96,165,250,.22)}
+    input[type=checkbox]{width:16px;height:16px;accent-color:var(--accent)}
+    .note{font-size:.88em;color:var(--dim2);margin:4px 0 9px;line-height:1.5}
+    .sheet .row{margin-top:16px}
+
+    .swatches{display:flex;gap:8px}
+    .sw{flex:1;padding:9px 6px;border-radius:var(--r-sm);font-size:.9em;font-weight:500;
+      text-align:center;border:1px solid var(--line);background:transparent;
+      color:var(--dim);
+      transition:background var(--dur) var(--ease),color var(--dur) var(--ease),
+                 border-color var(--dur) var(--ease)}
+    .sw:hover{background:var(--card-hi);color:var(--fg)}
+    .sw[aria-pressed=true]{border-color:var(--accent);color:var(--fg);
+      background:rgba(96,165,250,.16);box-shadow:0 0 0 3px rgba(96,165,250,.14)}
+
+    /* --------------------------------------------------------------- themes */
+    body.theme-light{--win-rgb:241,245,249;--win-alpha:1;
+      --bg:#f1f5f9;--bg2:#e8eef5;
+      --card:rgba(255,255,255,.72);--card-hi:rgba(226,232,240,.85);
+      --surface:rgba(255,255,255,.85);
+      --line:rgba(71,85,105,.18);--line2:rgba(71,85,105,.30);
+      --fg:#0f172a;--dim:#334155;--dim2:#526078;
+      --accent:#2563eb;--go:#b45309;--ok:#15803d;--warn:#dc2626;
+      --glass-edge:rgba(255,255,255,.75);
+      --shadow:0 18px 45px rgba(15,23,42,.16),0 2px 8px rgba(15,23,42,.10);
+      --shadow-sm:0 4px 14px rgba(15,23,42,.12)}
+    body.theme-light .cell{background:rgba(71,85,105,.22)}
+    body.theme-light .cell.past{background:rgba(71,85,105,.42)}
+    body.theme-light #clock.go{text-shadow:none}
+
+    body.theme-amber{--win-rgb:26,18,6;--win-alpha:1;
+      --bg:#1a1206;--bg2:#221708;
+      --card:rgba(45,32,14,.62);--card-hi:rgba(69,50,22,.66);
+      --surface:rgba(18,12,3,.72);
+      --line:rgba(184,148,77,.22);--line2:rgba(184,148,77,.38);
+      --fg:#ffd98a;--dim:#e0b96e;--dim2:#b8944d;
+      --accent:#fbbf24;--go:#fff3c4;--ok:#4ade80;--warn:#f87171;
+      --glass-edge:rgba(255,220,150,.14);
+      --shadow:0 18px 50px rgba(0,0,0,.6),0 2px 8px rgba(0,0,0,.4);
+      --shadow-sm:0 4px 14px rgba(0,0,0,.4)}
+    body.theme-amber .cell{background:rgba(184,148,77,.24)}
+    body.theme-amber .cell.past{background:rgba(184,148,77,.46)}
+
+
+    /* ------------------------------------------------------------ scrollbars */
+    /* The default Windows scrollbar is a dated grey slab and the single most
+       "unstyled" looking element in the settings sheet.  A slim themed bar keeps
+       the glass look intact. */
+    *{scrollbar-width:thin;scrollbar-color:rgba(148,163,184,.35) transparent}
+    ::-webkit-scrollbar{width:10px;height:10px}
+    ::-webkit-scrollbar-track{background:transparent}
+    ::-webkit-scrollbar-thumb{background:rgba(148,163,184,.30);border-radius:99px;
+      border:3px solid transparent;background-clip:content-box}
+    ::-webkit-scrollbar-thumb:hover{background:rgba(148,163,184,.55);
+      background-clip:content-box}
+    ::-webkit-scrollbar-corner{background:transparent}
+    body.theme-light{scrollbar-color:rgba(71,85,105,.35) transparent}
+    body.theme-light ::-webkit-scrollbar-thumb{background:rgba(71,85,105,.30);
+      background-clip:content-box}
+    body.theme-light ::-webkit-scrollbar-thumb:hover{background:rgba(71,85,105,.5);
+      background-clip:content-box}
+
+    /* The title bar and the card must read as ONE rounded surface: the bar sits
+       inside the card's rounded top, sharing its radius, rather than being a
+       separate rectangle above it. */
+    body.shell .stage{flex-direction:column}
+    body.shell #titlebar{
+      flex:none;margin:0;border-radius:var(--r-lg) var(--r-lg) 0 0;
+      background:linear-gradient(180deg,rgba(255,255,255,.06),rgba(255,255,255,0))}
+
+    /* ---------------------------------------------------------- resize grips */
+    .grip{position:fixed;z-index:60}
+    .grip.n{top:0;left:14px;right:14px;height:6px;cursor:ns-resize}
+    .grip.s{bottom:0;left:14px;right:14px;height:6px;cursor:ns-resize}
+    .grip.w{top:14px;bottom:14px;left:0;width:6px;cursor:ew-resize}
+    .grip.e{top:14px;bottom:14px;right:0;width:6px;cursor:ew-resize}
+    .grip.nw{top:0;left:0;width:16px;height:16px;cursor:nwse-resize}
+    .grip.ne{top:0;right:0;width:16px;height:16px;cursor:nesw-resize}
+    .grip.sw{bottom:0;left:0;width:16px;height:16px;cursor:nesw-resize}
+    .grip.se{bottom:0;right:0;width:16px;height:16px;cursor:nwse-resize}
+    body:not(.shell) .grip{display:none}
+</style>
+</head>
+<body>
+
+<div id="titlebar">
+  <div class="drag" id="drag"><span class="name" id="tb-name">chrono-handoff</span></div>
+  <button class="wbtn" id="tb-min" title="最小化"><svg viewBox="0 0 12 12"><path d="M2 6h8"/></svg></button>
+  <button class="wbtn" id="tb-max" title="最大化 / 还原"><svg viewBox="0 0 12 12"><rect x="2.2" y="2.2" width="7.6" height="7.6" rx="1"/></svg></button>
+  <button class="wbtn" id="tb-set" title="设置"><svg viewBox="0 0 12 12"><circle cx="6" cy="6" r="2.1"/><path d="M6 1.2v1.6M6 9.2v1.6M1.2 6h1.6M9.2 6h1.6M2.6 2.6l1.1 1.1M8.3 8.3l1.1 1.1M9.4 2.6L8.3 3.7M3.7 8.3L2.6 9.4"/></svg></button>
+  <button class="wbtn close" id="tb-close" title="关闭"><svg viewBox="0 0 12 12"><path d="M2.5 2.5l7 7M9.5 2.5l-7 7"/></svg></button>
+</div>
+
+<div class="stage">
+  <div class="panel" id="panel">
+    <div class="head">
+      <span class="state"><i class="dot" id="live"></i><span id="state">待机</span></span>
+      <span class="runid" id="runid"></span>
+    </div>
+    <div class="instr" id="instruction">等待提示</div>
+    <div class="guide" id="guidance"></div>
+    <div class="clockwrap"><div id="clock">—</div><div class="phase" id="phase"></div></div>
+    <div id="grid"></div>
+    <div class="actions">
+      <button id="press" disabled>GO 时按下</button>
+      <div class="row">
+        <button class="ghost" id="start" hidden>立即开始</button>
+        <button class="ghost" id="resync">重新校时</button>
+      </div>
+    </div>
+    <div class="meter">
+      <div class="m"><span>时钟偏移 · 客户端→服务端</span><b id="m-offset">—</b></div>
+      <div class="m"><span>往返延迟</span><b id="m-rtt">—</b></div>
+      <div class="m"><span>音频调度</span><b id="m-audio">—</b></div>
+      <div class="m"><span>你的按压 vs GO</span><b id="m-result">—</b></div>
+      <div class="m"><span>栅格</span><b id="m-beats">—</b></div>
+    </div>
+  </div>
+
+  <div id="settings">
+    <div class="sheet">
+      <h2>设置</h2>
+      <div class="grp">
+        <h3>节奏</h3>
+        <div class="f"><label>倒计时长度</label><input type="range" id="s-lead" min="0" max="15" step="0.5"><span class="v" id="v-lead"></span></div>
+        <div class="f"><label>拍距</label><input type="range" id="s-ioi" min="150" max="1500" step="10"><span class="v" id="v-ioi"></span></div>
+        <div class="f"><label>GO 后继续拍数</label><input type="range" id="s-tail" min="0" max="16" step="1"><span class="v" id="v-tail"></span></div>
+        <div class="f"><label>默认目标时刻（秒）</label><input type="number" id="s-target" min="1" max="600" step="0.5"></div>
+        <div class="note">倒计时长度决定 GO 之前播几拍（实际拍数 = 倒计时 ÷ 拍距）。拍距约 500ms 时人最容易跟拍。GO 之后继续播是为了让人锁定脉动，而不是等它出现再反应——别调成 0。</div>
+      </div>
+      <div class="grp">
+        <h3>声音</h3>
+        <div class="f"><label>启用声音</label><input type="checkbox" id="s-audio"></div>
+        <div class="f"><label>音量</label><input type="range" id="s-vol" min="0" max="1" step="0.05"><span class="v" id="v-vol"></span></div>
+        <div class="f"><label>GO 音高（Hz）</label><input type="number" id="s-accent-hz" min="200" max="4000" step="20"></div>
+        <div class="f"><label>普通拍音高（Hz）</label><input type="number" id="s-tick-hz" min="200" max="4000" step="20"></div>
+        <div class="f"><label>GO 时长（ms）</label><input type="number" id="s-accent-ms" min="20" max="500" step="5"></div>
+        <div class="f"><label>普通拍时长（ms）</label><input type="number" id="s-tick-ms" min="10" max="300" step="5"></div>
+        <div class="row"><button class="ghost" id="s-test">试听</button></div>
+      </div>
+      <div class="grp">
+        <h3>窗口</h3>
+        <div class="f"><label>置顶</label><input type="checkbox" id="s-top"></div>
+        <div class="f"><label>不透明度</label><input type="range" id="s-opacity" min="0.45" max="1" step="0.02"><span class="v" id="v-opacity"></span></div>
+        <div class="f"><label>记住窗口位置与大小</label><input type="checkbox" id="s-remember"></div>
+        <div class="f"><label>主题</label><div class="swatches">
+          <button class="sw" data-theme="dark">深色</button>
+          <button class="sw" data-theme="light">浅色</button>
+          <button class="sw" data-theme="amber">琥珀</button>
+        </div></div>
+        <div class="note">窗口缩放：直接拖拽窗口边缘。无边框窗口没有系统缩放边框，所以四条边与四个角都是自绘的拖拽把手；内容字号随窗口自动缩放，不需要手动调。</div>
+      </div>
+      <div class="grp">
+        <h3>校准</h3>
+        <div class="f"><label>应用学习到的偏移</label><input type="checkbox" id="s-calo"></div>
+        <div class="note" id="cal-info">—</div>
+      </div>
+      <div class="row">
+        <button class="ghost" id="s-save">保存</button>
+        <button class="ghost" id="s-reset">恢复默认</button>
+        <button class="ghost" id="s-close">返回</button>
+      </div>
+    </div>
+  </div>
+</div>
+
+<div class="grip n" data-grip="n"></div><div class="grip s" data-grip="s"></div>
+<div class="grip w" data-grip="w"></div><div class="grip e" data-grip="e"></div>
+<div class="grip nw" data-grip="nw"></div><div class="grip ne" data-grip="ne"></div>
+<div class="grip sw" data-grip="sw"></div><div class="grip se" data-grip="se"></div>
+
+<script>
+"use strict";
+const $ = (id) => document.getElementById(id);
+const POLL_MS = 1500;
+
+/* ------------------------------------------------------------------ state */
+const S = {
+  offsetMs: null,        // server_wall − client_wall  (ms)
+  bestRtt: Infinity,
+  runId: null,
+  sched: null,           // {beats:[{index, at_ms, accent,...}], ...}
+  zeroMs: null,          // client-clock epoch ms of the GO beat
+  audioStart: null,      // AudioContext time of the GO beat
+  ac: null,
+  scheduled: [],
+  pressed: false,
+  lastSeq: 0,
+  generation: 0,
+  armedNotified: false,
+};
+
+/* ------------------------------------------------------------ clock sync */
+/* NTP-style: we cannot know the offset without the round trip, and the round
+   trip is not symmetric.  Taking the sample with the SMALLEST RTT is the
+   standard trick — it is the one least polluted by scheduling delay.        */
+async function syncClock(samples = 7) {
+  let best = null;
+  for (let i = 0; i < samples; i++) {
+    const t0 = performance.timeOrigin + performance.now();
+    let r;
+    try { r = await (await fetch("/api/clock", { cache: "no-store" })).json(); }
+    catch { break; }
+    const t1 = performance.timeOrigin + performance.now();
+    const rtt = t1 - t0;
+    // server wall at our t1 ≈ what it received + half the round trip
+    const serverAtT1 = r.server_recv_wall * 1000 + rtt / 2;
+    if (best === null || rtt < best.rtt) best = { rtt, offset: serverAtT1 - t1 };
+  }
+  if (best) {
+    S.offsetMs = best.offset;   // server_wall = client_wall + offsetMs
+    S.bestRtt = best.rtt;
+    $("m-offset").textContent = fmtSigned(best.offset) + " ms";
+    $("m-rtt").textContent = best.rtt.toFixed(1) + " ms";
+    $("m-offset").className = Math.abs(best.offset) < 100000 ? "good" : "";
+  }
+  return S.offsetMs;
+}
+const toClient = (serverWallMs) => serverWallMs - S.offsetMs;
+const toServer = (clientMs) => clientMs + S.offsetMs;
+const fmtSigned = (v) => (v >= 0 ? "+" : "−") + Math.abs(v).toFixed(1);
+
+/* ---------------------------------------------------------------- audio */
+/* Sample-accurate scheduling: every beat is handed to the Web Audio clock in
+   one batch, so beat-to-beat accuracy never depends on JS timers, rAF, or the
+   network.  This is the whole reason the schedule is fetched in one shot.   */
+function primeAudio() {
+  if (S.ac) return S.ac;
+  const AC = window.AudioContext || window.webkitAudioContext;
+  S.ac = new AC();
+  return S.ac;
+}
+function anchor() {
+  // bridge the two clocks: AudioContext time <-> performance time
+  return { ac: S.ac.currentTime, perf: performance.now() };
+}
+function click(freq, dur, when) {
+  const ac = S.ac;
+  const osc = ac.createOscillator(), gain = ac.createGain();
+  osc.type = "sine"; osc.frequency.value = freq;
+  const t = Math.max(when, ac.currentTime + 0.001);
+  const fade = 0.004;
+  gain.gain.setValueAtTime(0, t);
+  gain.gain.linearRampToValueAtTime(0.5, t + fade);
+  gain.gain.setValueAtTime(0.5, t + Math.max(fade, dur - fade));
+  gain.gain.linearRampToValueAtTime(0, t + dur);
+  osc.connect(gain).connect(ac.destination);
+  osc.start(t); osc.stop(t + dur + 0.01);
+  return osc;
+}
+function scheduleCue() {
+  if (!S.sched || !S.sched.beats.length) return 0;
+  // Guard against re-scheduling the same cue.  Without this, any caller that
+  // touches scheduleCue() again (long-poll re-entry, clock re-sync, a settings
+  // push) would add a SECOND set of oscillators for the same beats and the
+  // human would hear every beat twice -- which destroys exactly the rhythmic
+  // reference the cue is supposed to provide.
+  if (S.schedFor === S.runId && S.scheduled.length > 0) return S.scheduled.length;
+  S.schedFor = S.runId;
+  const ac = primeAudio();
+  if (ac.state === "suspended") ac.resume();
+  const a = anchor();
+  const perfToAc = (perfMs) => a.ac + (perfMs - a.perf) / 1000;
+
+  S.scheduled.forEach(n => { try { n.stop(); } catch {} });
+  S.scheduled = [];
+  let n = 0, skipped = 0;
+  const lastBeatMs = S.sched.beats.reduce((a, b) => Math.max(a, b.at_ms), 0);
+  for (const b of S.sched.beats) {
+    const clientMs = toClient(b.at_ms);
+    const perfMs = clientMs - performance.timeOrigin;
+    const when = perfToAc(perfMs);
+    if (when < ac.currentTime) {
+      // Only a mid-grid beat is a defect; the grid origin slipping past during
+      // arming is expected and flagged on every cue otherwise.
+      if (b.at_ms < lastBeatMs - 1) skipped++;
+      continue;
+    }
+    const osc = click(b.accent ? 1568 : 880, b.accent ? 0.09 : 0.035, when);
+    if (osc) S.scheduled.push(osc);
+    b._whenAc = when;
+    n++;
+  }
+  S.audioStart = S.sched.zero_wall_ms ? perfToAc(toClient(S.sched.zero_wall_ms) - performance.timeOrigin) : null;
+  $("m-audio").textContent = `${n} scheduled${skipped ? `, ${skipped} skipped` : ""}`;
+  $("m-audio").className = skipped ? "bad" : "good";
+  return n;
+}
+
+/* ------------------------------------------------------------------ grid */
+function buildGrid() {
+  const g = $("grid"); g.innerHTML = "";
+  if (!S.sched) return;
+  for (const b of S.sched.beats) {
+    const d = document.createElement("div");
+    d.className = "cell" + (b.accent ? " go" : "") + (b.at_ms < (S.sched.zero_wall_ms || 0) && !b.accent && b.index > 0 ? " tail" : "");
+    d.dataset.idx = b.index;
+    g.appendChild(d);
+  }
+}
+
+/* ----------------------------------------------------------- render loop */
+function tick() {
+  requestAnimationFrame(tick);
+  if (!S.sched || !S.sched.beats.length || S.zeroMs === null) return;
+  const now = performance.timeOrigin + performance.now();
+  const beats = S.sched.beats;
+  const first = toClient(beats[0].at_ms), zero = S.zeroMs;
+  const last = toClient(beats[beats.length - 1].at_ms);
+
+  // which beat are we nearest to / just after
+  let idx = -1;
+  for (let i = 0; i < beats.length; i++) { if (toClient(beats[i].at_ms) <= now) idx = i; }
+  const next = beats[idx + 1] || null;
+  const nextMs = next ? toClient(next.at_ms) : null;
+
+  const cls = ["cell"];
+  for (const el of $("grid").children) {
+    const b = beats[+el.dataset.idx];
+    const t = toClient(b.at_ms);
+    let c = "cell";
+    if (t <= now) c += b.accent ? " go" : " past";
+    if (next && b.index === next.index) c += " now";
+    el.className = c;
+    if (toClient(b.at_ms) > zero) c += " tail";
+  }
+
+  /* Ordered by time.  The previous version tested `nextBeat > GO` to decide
+     "still counting down", which is false for every beat before GO, so during
+     the countdown it fell through to the tail branch and rendered
+     `"+" + negative` -- i.e. "+-3.2".  The number the operator reads most was
+     the one that was broken. */
+  const clockEl = $("clock"), phaseEl = $("phase");
+  const sinceZero = now - zero;
+
+  let left = 0;
+  for (const b of beats) {
+    if (!b.accent && toClient(b.at_ms) > now && toClient(b.at_ms) <= zero) left++;
+  }
+
+  function paint(text, cls, phase) {
+    if (clockEl.textContent !== text) clockEl.textContent = text;
+    if (clockEl.className !== cls) clockEl.className = cls;
+    if (phaseEl.textContent !== phase) phaseEl.textContent = phase;
+  }
+
+  if (now < first) {
+    paint("准备", "clock ready", "还有 " + ((first - now) / 1000).toFixed(1) + " 秒开始");
+  } else if (sinceZero < -0.02) {
+    paint(String(left).padStart(2, "0"), "clock",
+          "距 GO " + left + " 拍 · " + ((-sinceZero) / 1000).toFixed(2) + " 秒");
+  } else if (sinceZero <= 300) {
+    paint("GO", "clock go", "就是现在");
+  } else {
+    paint("+" + (sinceZero / 1000).toFixed(1), "clock tail", "已过目标时刻");
+  }
+
+  pulseButton(now);
+}
+
+
+/* ----------------------------------------------------------------- input */
+async function doPress(ev) {
+  if (S.pressed || !S.sched) return;
+  S.pressed = true;
+  const clientMs = performance.timeOrigin + performance.now();   // click-handler time
+  $("press").classList.add("hit");
+  $("press").disabled = true;
+  try {
+    const r = await (await fetch("/api/press", {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        run_id: S.runId, payload: "space",
+        client_wall_ms: clientMs, clock_offset_ms: S.offsetMs,
+      }),
+    })).json();
+    if (r.ok && typeof r.offset_ms === "number") {
+      const v = r.offset_ms;
+      $("m-result").textContent = fmtSigned(v) + " ms (" + (v < 0 ? "early" : "late") + ")";
+      $("m-result").className = Math.abs(v) < 80 ? "good" : "";
+    } else {
+      $("m-result").textContent = r.error || "not counted";
+      $("m-result").className = "bad";
+    }
+  } catch (e) {
+    $("m-result").textContent = "send failed";
+    $("m-result").className = "bad";
+  }
+  setTimeout(() => { S.pressed = false; $("press").classList.remove("hit"); }, 700);
+}
+
+/* ------------------------------------------------------------------- cue */
+async function applySchedule(sched) {
+  S.sched = sched;
+  S.runId = sched.run_id;
+  S.zeroMs = sched.zero_wall_ms ? toClient(sched.zero_wall_ms) : null;
+  S.pressed = false;
+  S.lastSeq = 0;
+  S.schedFor = null;          // a genuinely new cue -> schedule it for real
+
+  $("runid").textContent = sched.run_id || "—";
+  $("instruction").textContent = sched.instruction || "Act now";
+  $("state").textContent = "提示已就绪";
+  $("live").classList.add("live");
+  $("press").disabled = false;
+  $("press").textContent = "GO 时按下";
+  $("m-result").textContent = "—";
+  $("m-result").className = "";
+  $("m-beats").textContent = `${sched.beats.length} beats · ioi ${sched.ioi_ms} ms`
+    + (sched.target_wall_ms ? ` · GO at ${new Date(sched.target_wall_ms).toLocaleTimeString()}` : "");
+  buildGrid();
+  const n = scheduleCue();
+  $("guidance").textContent = sched.audio
+    ? "听脉冲，重拍就是 GO，踩在它上面按下。"
+    : "看栅格，重拍就是 GO，踩在它上面按下。";
+  if (n === 0) {
+    $("guidance").textContent = "栅格在页面就绪前就播完了 —— 仍可按下来记录时刻。";
+  }
+}
+
+function pollEvents() {
+  fetch(`/api/events?since=${S.lastSeq}`, { cache: "no-store" }).then(r => r.json()).then(d => {
+    if (!d.events || !d.events.length) return;
+    S.lastSeq = d.events[d.events.length - 1].seq;
+    for (const e of d.events) {
+      if (e.kind === "run_end") {
+        $("state").textContent = "已结束 · " + (e.detail.status || "?");
+        $("live").classList.remove("live");
+        $("press").disabled = true;
+      }
+    }
+  }).catch(() => {});
+}
+
+/* Long-poll for the next armed cue: the page must react the instant a cue is
+   armed, including when it was opened long before it was needed.            */
+function waitArmed() {
+  fetch("/api/wait-armed?timeout=25&since=" + (S.generation || 0), { cache: "no-store" })
+    .then(r => r.json())
+    .then(async d => {
+      if (d && d.run_id) {
+        if (typeof d.generation === "number") S.generation = d.generation;
+        if (d.run_id === S.runId && S.sched) {
+          // Already displaying this cue. Re-applying it would reset the press
+          // result the human is looking at and (before the guard above) double
+          // the audio. Keep polling for the *next* cue instead.
+          return;
+        }
+        const s = await (await fetch("/api/schedule?run_id=" + encodeURIComponent(d.run_id), { cache: "no-store" })).json();
+        if (s && s.beats && s.beats.length) { await applySchedule(s); pollEvents(); return; }
+        if (s && s.run_id && s.status === "pending") {
+          // armed but not started yet -- show it and offer a manual start
+          S.sched = null; S.runId = s.run_id;
+          $("runid").textContent = s.run_id;
+          $("instruction").textContent = s.instruction || "Cue ready";
+          $("state").textContent = "已武装（未开始）";
+          $("guidance").textContent = "提示已武装，由 agent 决定何时开始 —— 也可现在按「立即开始」。";
+          $("start").hidden = false;
+        }
+      }
+    })
+    .catch(() => {})
+    .finally(() => setTimeout(waitArmed, 400));
+}
+
+/* ------------------------------------------------------------------ boot */
+$("press").addEventListener("pointerdown", doPress);
+$("resync").addEventListener("click", async () => { await syncClock(); if (S.sched) scheduleCue(); });
+$("start").addEventListener("click", async () => {
+  $("start").hidden = true;
+  await fetch("/api/start", { method: "POST", headers: { "Content-Type": "application/json" }, body: "{}" });
+});
+addEventListener("keydown", (e) => {
+  if (e.code === "Space") { e.preventDefault(); doPress(e); }
+});
+addEventListener("pointerdown", () => { if (S.ac && S.ac.state === "suspended") S.ac.resume(); }, { once: true });
+
+(async function main() {
+  requestAnimationFrame(tick);
+  await syncClock();
+  try {
+    const s = await (await fetch("/api/schedule", { cache: "no-store" })).json();
+    if (s && s.beats && s.beats.length && s.status === "running") await applySchedule(s);
+  } catch {}
+  waitArmed();
+  setInterval(pollEvents, POLL_MS);
+  pollHealth();
+  setInterval(pollHealth, 5000);
+  setInterval(async () => {          // periodic re-sync; clock drift is real
+    await syncClock(3);
+    if (S.sched && S.sched.beats.some(b => toClient(b.at_ms) > performance.timeOrigin + performance.now())) {
+      S.schedFor = null;              // force a re-schedule after the offset moved
+      scheduleCue();
+    }
+  }, 60000);
+})();
+
+/* Button pulse, driven by the SAME beat instants the audio is scheduled from
+   (through the core's toClient), so the visual cannot drift from the sound.
+   Purely additive: audio stays the primary cue. */
+function pulseButton(now) {
+  const btn = $("press");
+  if (!btn || !S.sched || !S.sched.beats.length) return;
+  let idx = -1;
+  for (let i = 0; i < S.sched.beats.length; i++) {
+    if (toClient(S.sched.beats[i].at_ms) <= now) idx = i; else break;
+  }
+  if (idx < 0 || idx === pulseButton._i) return;
+  pulseButton._i = idx;
+  const b = S.sched.beats[idx];
+  btn.classList.toggle("go", !!b.accent);
+  btn.classList.add("beat");
+  clearTimeout(pulseButton._t);
+  pulseButton._t = setTimeout(() => {
+    btn.classList.remove("beat");
+    if (!b.accent) btn.classList.remove("go");
+  }, 90);
+}
+
+
+/* ============================================================ desktop shell */
+/* Active only when hosted by the native window (?shell=desktop).  The bridge is
+   window.pywebview.api; every call is guarded so this same HTML still works as
+   a plain browser tab.                                                       */
+const SHELL = new URLSearchParams(location.search).get("shell") === "desktop";
+let CFG = null;
+/* NOTE: `$` comes from the timing core above.  Redeclaring it here is a
+   SyntaxError for the ENTIRE script -- the page still paints, so it looks like a
+   styling problem while every listener, the shell layout and the beat grid are
+   silently dead.  Do not reintroduce it. */
+
+function bridgeAPI() { return (window.pywebview && window.pywebview.api) || null; }
+async function waitBridge(ms) {
+  const t0 = performance.now();
+  while (performance.now() - t0 < (ms || 3000)) {
+    const a = bridgeAPI();
+    if (a) return a;
+    await new Promise(r => setTimeout(r, 50));
+  }
+  return null;
+}
+
+const FIELDS = {
+  "s-lead":["lead_s",parseFloat], "s-ioi":["ioi_ms",parseFloat], "s-tail":["tail_beats",parseInt],
+  "s-target":["default_target_in_s",parseFloat], "s-audio":["audio_enabled",v=>v],
+  "s-vol":["volume",parseFloat], "s-accent-hz":["accent_hz",parseFloat],
+  "s-tick-hz":["tick_hz",parseFloat], "s-accent-ms":["accent_ms",parseFloat],
+  "s-tick-ms":["tick_ms",parseFloat], "s-top":["always_on_top",v=>v],
+  "s-opacity":["opacity",parseFloat], "s-remember":["remember_position",v=>v],
+  "s-calo":["apply_learned_offset",v=>v],
+};
+
+const WIN_RGB = { dark: "10,12,17", light: "245,247,251", amber: "21,15,4" };
+
+function applyTheme(t) {
+  document.body.classList.remove("theme-light","theme-amber");
+  if (t === "light") document.body.classList.add("theme-light");
+  else if (t === "amber") document.body.classList.add("theme-amber");
+  // The html element paints the area the theme class (on body) cannot reach,
+  // so mirror the colour onto the root explicitly.
+  document.documentElement.style.setProperty("--win-rgb", WIN_RGB[t] || WIN_RGB.dark);
+  for (const el of document.querySelectorAll(".sw"))
+    el.setAttribute("aria-pressed", String(el.dataset.theme === (t || "dark")));
+}
+
+function fillForm(cfg) {
+  CFG = cfg || {};
+  for (const [id,[key]] of Object.entries(FIELDS)) {
+    const e = $(id); if (!e) continue;
+    if (e.type === "checkbox") e.checked = !!CFG[key]; else e.value = CFG[key];
+  }
+  applyTheme(CFG.theme);
+  if (SHELL) bridgeCall("apply_theme", CFG.theme || "dark");
+  updateLabels();
+  refreshCal();
+}
+
+function updateLabels() {
+  const g = (id) => ($(id) ? $(id).value : "");
+  $("v-lead").textContent = g("s-lead") + " s";
+  $("v-ioi").textContent = g("s-ioi") + " ms";
+  $("v-tail").textContent = g("s-tail") + " 拍";
+  $("v-vol").textContent = Math.round(g("s-vol") * 100) + "%";
+  $("v-opacity").textContent = Math.round(g("s-opacity") * 100) + "%";
+}
+
+function collect() {
+  const out = {};
+  for (const [id,[key,cast]] of Object.entries(FIELDS)) {
+    const e = $(id); if (!e) continue;
+    out[key] = e.type === "checkbox" ? e.checked : cast(e.value);
+  }
+  const t = document.querySelector(".sw[aria-pressed=true]");
+  if (t) out.theme = t.dataset.theme;
+  return out;
+}
+
+async function refreshCal() {
+  try {
+    const r = await (await fetch("/api/calibration",{cache:"no-store"})).json();
+    const items = r.items || [];
+    $("cal-info").textContent = items.length
+      ? "已学到 " + items.length + " 组：" + items.map(i =>
+          `${i.key.split("|").pop()} ${i.offset_ms.toFixed(0)}ms (n=${i.n})`).join("；")
+      : "尚无校准数据。跑完一次提示后才会出现。";
+  } catch { $("cal-info").textContent = "—"; }
+}
+
+async function saveSettings() {
+  const patch = collect();
+  const a = await waitBridge(1500);
+  if (a && a.save_settings) await a.save_settings(patch);
+  else await fetch("/api/settings",{method:"POST",headers:{"Content-Type":"application/json"},
+                                    body:JSON.stringify(patch)});
+  CFG = Object.assign({}, CFG, patch);
+  applyTheme(patch.theme);
+  flash("已保存");
+}
+
+function flash(msg) {
+  const n = $("tb-name"); if (!n) return;
+  n.textContent = msg;
+  clearTimeout(flash._t);
+  flash._t = setTimeout(() => { n.textContent = "chrono-handoff"; }, 1200);
+}
+
+function setSettings(open) {
+  document.body.classList.toggle("settings-open", !!open);
+}
+
+/* ---------------------------------------------------- conductor liveness */
+/* In --attach mode the conductor is another process.  If it dies, every /api
+   call fails and the panel would look merely idle -- indistinguishable from
+   "no cue yet", which is dangerous: the operator would wait for a countdown
+   that can never arrive.  Say it out loud.                                  */
+let healthOk = null;
+async function pollHealth() {
+  let ok = true;
+  try { ok = (await fetch("/api/health",{cache:"no-store"})).ok; } catch { ok = false; }
+  if (ok === healthOk) return;
+  healthOk = ok;
+  const n = $("tb-name");
+  if (n) {
+    n.textContent = ok ? "chrono-handoff" : "conductor 已失联 — 不会有提示";
+    n.classList.toggle("bad", !ok);
+  }
+  const dot = $("live");
+  if (dot && !ok) dot.classList.remove("live");
+}
+
+/* ---------------------------------------------------------- window chrome */
+let bridgeCall = async () => null;
+
+function wireShell() {
+  if (!SHELL) return;
+  document.body.classList.add("shell");
+
+  const call = async (name, ...args) => {
+    const a = await waitBridge(2000);
+    if (!a || typeof a[name] !== "function") return null;
+    try { return await a[name](...args); } catch { return null; }
+  };
+
+  $("tb-min").addEventListener("click", () => call("minimize"));
+  $("tb-max").addEventListener("click", () => call("toggle_maximize"));
+  $("tb-close").addEventListener("click", () => call("close"));
+  $("tb-set").addEventListener("click", () => setSettings(!document.body.classList.contains("settings-open")));
+  $("s-close").addEventListener("click", () => setSettings(false));
+  $("drag").addEventListener("dblclick", () => call("toggle_maximize"));
+
+  // Window drag, title bar only.  easy_drag is OFF (it made every press a window
+  // drag, including settings sliders), so this is the only way the window moves.
+  // Same absolute-delta contract as the resize grips.
+  $("drag").addEventListener("pointerdown", (e) => {
+    if (e.button !== 0) return;
+    const sx0 = e.screenX, sy0 = e.screenY;
+    let latest = null, inFlight = false, lastSent = 0;
+    const flush = async () => {
+      if (inFlight || !latest) return;
+      const d = latest;
+      inFlight = true;
+      await call("update_drag", d.dx, d.dy);
+      inFlight = false;
+      if (latest && (latest.dx !== d.dx || latest.dy !== d.dy)) flush();
+    };
+    const onMove = (ev) => {
+      latest = { dx: ev.screenX - sx0, dy: ev.screenY - sy0 };
+      const now = performance.now();
+      if (now - lastSent > 8) { lastSent = now; flush(); }
+    };
+    const onUp = async () => {
+      document.removeEventListener("pointermove", onMove);
+      document.removeEventListener("pointerup", onUp);
+      if (latest) await call("update_drag", latest.dx, latest.dy);
+      while (inFlight) await new Promise(r => setTimeout(r, 4));
+      call("end_drag");
+    };
+    document.addEventListener("pointermove", onMove);
+    document.addEventListener("pointerup", onUp);
+    call("begin_drag");
+  });
+
+  // Resize grips.
+  //
+  // The PAGE drives this rather than Python polling the cursor.  A polling
+  // version was a race: pointerdown -> JS -> bridge -> thread start costs enough
+  // that a quick flick released the button before the first poll, so fast drags
+  // did nothing while slow ones worked.
+  //
+  // The delta sent is TOTAL since pointerdown (not per-move) and Python applies
+  // it to the baseline captured at pointerdown.  Increments were a real bug:
+  // Python computed baseline + this_delta, so each call overwrote the last and
+  // only the final increment survived -- a 120 px drag grew the window 6 px.
+  for (const g of document.querySelectorAll(".grip")) {
+    g.addEventListener("pointerdown", (e) => {
+      e.preventDefault();
+      const sx0 = e.screenX, sy0 = e.screenY;
+      let latest = null, inFlight = false, lastSent = 0;
+
+      const flush = async () => {
+        if (inFlight || !latest) return;
+        const d = latest;
+        inFlight = true;
+        await call("update_resize", d.dx, d.dy);
+        inFlight = false;
+        if (latest && (latest.dx !== d.dx || latest.dy !== d.dy)) flush();
+      };
+      const onMove = (ev) => {
+        latest = { dx: ev.screenX - sx0, dy: ev.screenY - sy0 };
+        const now = performance.now();
+        if (now - lastSent > 8) { lastSent = now; flush(); }
+      };
+      const onUp = async () => {
+        g.removeEventListener("pointermove", onMove);
+        g.removeEventListener("pointerup", onUp);
+        g.removeEventListener("pointercancel", onUp);
+        if (latest) await call("update_resize", latest.dx, latest.dy);
+        while (inFlight) await new Promise(r => setTimeout(r, 4));
+        call("end_resize");
+      };
+
+      // Listeners FIRST, every optional call isolated.  setPointerCapture can
+      // throw InvalidPointerId for synthetic/already-released pointers, and when
+      // it ran before the addEventListener calls it aborted the handler -- the
+      // grip looked clickable but dragging did nothing.
+      g.addEventListener("pointermove", onMove);
+      g.addEventListener("pointerup", onUp);
+      g.addEventListener("pointercancel", onUp);
+      try { g.setPointerCapture(e.pointerId); } catch (_) { /* optional */ }
+      call("begin_resize", g.dataset.grip);
+    });
+  }
+
+  for (const [id] of Object.entries(FIELDS)) {
+    const e = $(id); if (!e) continue;
+    const ev = (e.tagName === "SELECT" || e.type === "checkbox") ? "change" : "input";
+    e.addEventListener(ev, () => {
+      updateLabels();
+      if (id === "s-top") call("set_on_top", e.checked);
+      if (id === "s-opacity") call("set_opacity", parseFloat(e.value));
+    });
+  }
+  for (const sw of document.querySelectorAll(".sw"))
+    sw.addEventListener("click", () => {
+      applyTheme(sw.dataset.theme);
+      call("apply_theme", sw.dataset.theme);
+    });
+
+  $("s-save").addEventListener("click", saveSettings);
+  $("s-reset").addEventListener("click", async () => {
+    const a = await waitBridge(1500);
+    if (a && a.reset_settings) fillForm(await a.reset_settings());
+    else fillForm((await (await fetch("/api/settings/reset",{method:"POST"})).json()).settings);
+    flash("已恢复默认");
+  });
+  $("s-test").addEventListener("click", () => {
+    const ac = primeAudio(); if (ac.state === "suspended") ac.resume();
+    const vol = parseFloat($("s-vol").value);
+    const t0 = ac.currentTime + 0.06;
+    for (let i = 0; i < 4; i++)
+      tone(parseFloat($("s-tick-hz").value), parseFloat($("s-tick-ms").value)/1000, t0 + i*0.5, vol);
+    tone(parseFloat($("s-accent-hz").value), parseFloat($("s-accent-ms").value)/1000, t0 + 2.0, vol);
+  });
+
+  bridgeCall = call;
+
+  addEventListener("keydown", (e) => {
+    if (e.key === "Escape") { setSettings(false); e.stopPropagation(); }
+  }, true);
+}
+
+/* audible preview shares the cue's synthesis path so it sounds the same */
+function tone(freq, dur, when, vol) {
+  const ac = primeAudio();
+  const osc = ac.createOscillator(), g = ac.createGain();
+  osc.type = "sine"; osc.frequency.value = freq;
+  const fade = 0.004;
+  g.gain.setValueAtTime(0, when);
+  g.gain.linearRampToValueAtTime(vol, when + fade);
+  g.gain.setValueAtTime(vol, when + Math.max(fade, dur - fade));
+  g.gain.linearRampToValueAtTime(0, when + dur);
+  osc.connect(g).connect(ac.destination);
+  osc.start(when); osc.stop(when + dur + 0.02);
+}
+
+window.__chronoApplySettings = function (cfg) { fillForm(cfg); if (S.sched) scheduleCue(); };
+
+/* A script error must be visible: otherwise a half-dead panel just looks idle,
+   and the operator waits for a cue that will never come. */
+window.addEventListener("error", (e) => {
+  const n = $("tb-name") || $("state");
+  if (n) { n.textContent = "脚本错误：" + (e.message || "unknown"); n.classList.add("bad"); }
+});
+
+window.addEventListener("DOMContentLoaded", async () => {
+  wireShell();
+  const a = await waitBridge(2500);
+  let cfg = null;
+  if (a && a.get_settings) { try { cfg = await a.get_settings(); } catch {} }
+  if (!cfg) { try { cfg = (await (await fetch("/api/settings",{cache:"no-store"})).json()).settings; } catch {} }
+  fillForm(cfg || {});
+});
+
+</script>
+</body>
+</html>
