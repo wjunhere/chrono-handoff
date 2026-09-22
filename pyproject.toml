@@ -7,6 +7,11 @@ dependencies = []
 
 [project.optional-dependencies]
 mcp = ["mcp>=1.0"]
+# Sample-accurate portable audio.  Optional: Windows uses the built-in
+# winsound path, and the panel uses Web Audio in the browser.
+audio = ["sounddevice>=0.4"]
+# Everything needed for the full experience on any platform.
+all = ["mcp>=1.0", "sounddevice>=0.4", "pywebview>=5.0", "pyserial>=3.5"]
 dev = ["pytest>=7"]
 
 [project.scripts]

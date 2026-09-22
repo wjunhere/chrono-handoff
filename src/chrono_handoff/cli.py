@@ -28,7 +28,8 @@ from . import __version__
 from .calibrate import CalibrationStore, simulate_calibration
 from .clock import CLOCK, Scheduler, drift_report
 from .conductor import Conductor
-from .cue import BellAudio, NullAudio, default_audio
+from .audio import AUDIO_CHOICES
+from .cue import BellAudio, NullAudio, default_audio, describe_audio
 from .inputs import DEFAULT_KEY_LATENCY_S, analyse_offsets, make_source
 from .mcp_server import DEFAULT_HOST, DEFAULT_IPC_PORT, ConductorClient, ConductorServer
 from .model import CuePlan, SignalSpec, WindowSpec
@@ -87,7 +88,7 @@ def cmd_doctor(args: argparse.Namespace) -> int:
 
     # audio
     sink = default_audio("auto")
-    rows.append(("audio sink", sink.name, "wav=PlaySound async (0.25ms call); bell=ascii BEL; null=silent"))
+    rows.append(("audio sink", sink.name, describe_audio(sink)))
     if sink.name == "wav":
         import winsound
 
@@ -360,9 +361,13 @@ def _selftest_audio() -> tuple[bool, str]:
     providing no extra protection.
     """
     sink = default_audio("auto")
-    if sink.name != "wav":
+    if sink.precision != "device":
+        # A spawn-based or terminal-based sink has tens-to-hundreds of ms of
+        # unknown jitter by construction; there is nothing meaningful to assert
+        # about a per-call duration, and pretending otherwise would be a green
+        # check that proves nothing.
         sink.close()
-        return True, f"skipped (sink={sink.name}; only the wav sink can be measured)"
+        return True, f"skipped (sink={sink.name} is {sink.precision}-grade, not device-anchored)"
     sink.play("tick")
     time.sleep(0.15)  # warm the device: first call pays one-off init cost
     lat = []
@@ -376,7 +381,7 @@ def _selftest_audio() -> tuple[bool, str]:
     worst = max(lat)
     ok = med < 1.0 and worst < 20.0
     return ok, (
-        f"PlaySound call: median={med:.3f}ms max={worst:.3f}ms "
+        f"{sink.name} call: median={med:.3f}ms max={worst:.3f}ms "
         f"(median <1ms, max <20ms; Beep would block 35ms+)"
     )
 
@@ -883,7 +888,7 @@ def build_parser() -> argparse.ArgumentParser:
     pr.add_argument("--target-in", type=float, default=6.0, help="seconds from cue start to the physical target")
     pr.add_argument("--source", default="console_key", help="console_key|stdin_line|sim|http")
     pr.add_argument("--warmup", type=int, default=2, help="trials excluded from the report")
-    pr.add_argument("--audio", default="auto", choices=["auto", "wav", "bell", "null"])
+    pr.add_argument("--audio", default="auto", choices=list(AUDIO_CHOICES))
     pr.add_argument("--no-visual", action="store_true")
     pr.add_argument(
         "--visual-style",
@@ -904,7 +909,7 @@ def build_parser() -> argparse.ArgumentParser:
     dm = sub.add_parser("daemon", help="run the conductor daemon")
     net(dm)
     dm.add_argument("--journal-dir", default=None)
-    dm.add_argument("--audio", default="auto", choices=["auto", "wav", "bell", "null"])
+    dm.add_argument("--audio", default="auto", choices=list(AUDIO_CHOICES))
     dm.add_argument("--no-visual", action="store_true")
     dm.add_argument("--verbose", action="store_true")
     dm.add_argument("--background", action="store_true")
@@ -973,7 +978,7 @@ def build_parser() -> argparse.ArgumentParser:
     dm2.add_argument("--paused", action="store_true", help="arm, then wait for the panel's Start")
     dm2.add_argument("--host", default=DEFAULT_HOST)
     dm2.add_argument("--panel-port", type=int, default=8790)
-    dm2.add_argument("--conductor-audio", default="null", choices=["auto", "wav", "bell", "null"])
+    dm2.add_argument("--conductor-audio", default="null", choices=list(AUDIO_CHOICES))
     dm2.add_argument("--no-terminal", action="store_true", help="do not also render in this terminal")
     dm2.add_argument("--no-open", action="store_true", help="do not open a browser automatically")
     dm2.add_argument("--journal-dir", default=None)

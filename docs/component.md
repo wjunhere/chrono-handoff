@@ -421,3 +421,33 @@ python scripts/e2e_theme_drag.py   # 主题对比度 + 拖拽隔离（16 项）
 2. **串口闭环接入 demo**：现在是 `expect_source="none"`；改成 `"serial"` + `pattern="PMON2020"` 就是 case study §4.1 的完整流程。
 3. **开启校准**：把 `chrono_calibrate` 的输出接进 `offset_s`，跑 `--calibrate-every` 验证 residual 收敛。
 4. **MCP Apps 内嵌版**：现在面板是独立页面（可常驻、可复用、手机可用）。若希望它作为对话内联卡片出现，可另加一个 `_meta.ui.resourceUri` 版本。
+
+
+---
+
+## 音频后端
+
+提示音由 `AudioSink` 提供，后端按精度分级，`chrono doctor` 报告实际选中项：
+
+| 后端 | 平台 | 精度 | 说明 |
+|---|---|---|---|
+| `sample` | 全平台 | 采样级 | 常驻 PortAudio 流，需 `sounddevice` |
+| `wav` | Windows | 设备级 | `winsound` 异步播放预渲染 WAV |
+| `cmd` | 全平台 | **近似** | 外部播放器进程，启动抖动 10–250 ms |
+| `bell` | 全平台 | 未知 | ASCII BEL，由终端发声 |
+| `null` | 全平台 | —— | 静音，用于测量运行 |
+
+选择顺序：Windows 为 `wav → sample → cmd → bell`，其余平台为
+`sample → cmd → bell`。Windows 保持 `wav` 优先是因为它已实测
+（0.25 ms 调用、3 ms 最差）且无需依赖。
+
+```bash
+chrono daemon --audio sample     # 强制指定
+chrono daemon --audio null       # 出提示但静音（做纯计时测量）
+chrono doctor                    # 查看实际选中后端与理由
+```
+
+**强制指定本平台不提供的后端会报错**，不会静默换成别的后端——静默降级
+会让一次测量运行带上错误的精度等级而调用方毫不知情。
+
+浏览器面板不受影响：它用 Web Audio API 在本地调度音频，与操作系统无关。

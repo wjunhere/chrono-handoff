@@ -310,3 +310,81 @@ python -m chrono_handoff.cli doctor          # 必须看到 console: yes
 python -m chrono_handoff.cli probe --trials 30 --conditions both,visual
 ```
 拿到数据后，`theory.md` §2 与 `README` §6.2 里"±150ms → beep → ±50ms"那组来自 reaction-time 范式的数字就能被替换成本项目自己的实测值。
+
+
+---
+
+## 音频通道：跨平台重构（后补）
+
+### 为什么不能"随便接一个播放器"
+
+最初的跨平台想法是逐拍 `subprocess` 调系统播放器（`aplay` / `afplay`）。实测否掉了它：
+
+| 方案 | spawn 中位 | spawn p90 | spawn 最差 | 播放 35 ms 音的进程寿命 |
+|---|---|---|---|---|
+| `ffplay -nodisp -autoexit` | 9.6 ms | 16.5 ms | **246 ms** | 730 ms |
+
+对比 Windows 现役方案 `PlaySound` 的 **0.25 ms**：劣化约 40 倍，且最差 246 ms
+足以摧毁节拍网格。更致命的是它是**非确定性**的——同一段代码偶尔慢 25 倍，
+而这正是本项目唯一要测量的东西。
+
+结论：进程外包只能是**最后手段**，且必须被标记为近似精度。
+
+### 采用的分层设计
+
+新建 `audio.py`，后端按精度分级，由 `AudioSink.precision` 上报：
+
+| 后端 | 机制 | 精度 | `play()` 中位 |
+|---|---|---|---|
+| `sample` | 常驻 PortAudio 流（`sounddevice`），按帧偏移混音 | 采样级 | **0.006 ms** |
+| `wav` | Windows `winsound` 异步 | 设备级 | 0.206 ms |
+| `cmd` | 外部播放器进程 | 近似 | —— |
+| `bell` | ASCII BEL | 未知 | —— |
+
+`sample` 后端是**跨平台的正确答案**，两个显而易见的错误写法都避开了：
+
+- **不是每拍一个流**：开流要几十毫秒。
+- **不是 `sd.play()`**：它每次调用走一个新缓冲区，无法相对流时钟定位。
+
+做法是一条常驻 `RawOutputStream` + 一个 `(起始帧, 音色)` 队列。
+**块大小只影响提前量，不影响精度**：音可以在块内任意帧偏移起始（`k` 变量），
+所以定位精度是一帧，而不是一个块。
+
+### 精度等级是接口的一部分，不是注释
+
+静默降级到 `cmd` 会让一次测量运行带上错误的精度等级，而调用方无从知晓。
+因此：
+
+- `default_audio(force=...)` 在强制指定本平台不提供的后端时**抛异常**，不替换。
+- `chrono selftest` 的音频项按 `precision` 判断是否可测，而不是按后端名
+  （原先硬编码 `sink.name != "wav"` 会误跳过新的可移植后端）。
+- `chrono doctor` 打印选中后端与理由；`--audio` 的合法值集中在
+  `AUDIO_CHOICES`，避免 CLI/daemon/面板三处漂移。
+
+### 离线可测的混音器
+
+混音逻辑的正确性不依赖音频设备：`_callback` 可以手工驱动。测试因此
+覆盖了空闲静音、帧精确落点、**子块偏移**（非块大小整数倍）、
+多声部叠加不溢出 int16、**过期起始帧被夹紧而非越界写**、声部回收——
+无设备也能跑，且在无声环境里也不会假通过。
+
+### 音调字节必须不变
+
+`tone_pcm16` 与重构前的实现逐字节一致（测试里用旧实现作为 oracle 比对）。
+原因很实际：WAV 文件缓存在 `%TEMP%` 并按 `<key>_<freq>_<dur>` 命名，
+若字节变了，**已有机器会继续用旧文件、新机器用新音色**，同一实验在
+不同机器上听到不同的提示音。
+
+### 顺带发现：两个 UI 套件的假失败
+
+`e2e_resize` 有 4 项、`e2e_theme_drag` 有 3 项长期失败。用 `git stash` 对照确认
+**与本重构无关**。根因用 `WindowFromPoint` 与页面级 `pointerdown` 捕获探针定位：
+
+> 合成鼠标事件（`SetCursorPos` + `mouse_event`）只投递给前台窗口。
+> 窗口在后台时，**连页面级捕获监听器都不会触发**——事件根本没进渲染进程。
+> 而 Windows 会静默忽略来自非前台进程的 `SetForegroundWindow`。
+
+即"拖不动窗口"是**投递失败**，不是产品缺陷。已加共享助手 `scripts/_wininput.py`：
+- `focus_window()` 用 `AttachThreadInput` 解开前台锁；
+- `synthetic_input_works()` 在断言前**先探测**输入能否送达；
+- 送不到时**显式 SKIP 并告警**，而不是把没测的东西报成全通过。

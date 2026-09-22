@@ -25,6 +25,7 @@ import time
 from pathlib import Path
 from typing import Any
 
+from .audio import AUDIO_CHOICES
 from .conductor import Conductor
 from .mcp_server import DEFAULT_HOST, DEFAULT_IPC_PORT, ConductorServer
 
@@ -267,7 +268,7 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--host", default=DEFAULT_HOST)
     p.add_argument("--port", type=int, default=int(os.environ.get("CHRONO_IPC_PORT", DEFAULT_IPC_PORT)))
     p.add_argument("--journal-dir", default=None)
-    p.add_argument("--audio", default="auto", choices=["auto", "wav", "bell", "null"])
+    p.add_argument("--audio", default="auto", choices=list(AUDIO_CHOICES))
     p.add_argument("--no-visual", action="store_true")
     p.add_argument("--verbose", action="store_true")
     p.add_argument("--background", action="store_true", help="detach into its own console window")

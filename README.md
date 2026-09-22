@@ -31,9 +31,18 @@ LLM 的单轮推理耗时（5–30 s）将完整地落在关键路径上，无�
 ```bash
 git clone https://github.com/wjunhere/chrono-handoff.git
 cd chrono-handoff
-pip install -e .
-chrono selftest          # 机制自检，预期 10/10
+pip install -e ".[all]"     # 或 ".[mcp]" 仅装 MCP，见"安装选项"
+chrono selftest             # 机制自检，预期 10/10
 ```
+
+**安装选项**
+
+| 命令 | 内容 |
+|---|---|
+| `pip install -e .` | 仅核心（计时引擎 + CLI + 浏览器面板） |
+| `pip install -e ".[mcp]"` | 加 MCP 接入 |
+| `pip install -e ".[audio]"` | 加跨平台采样级音频（`sounddevice`） |
+| `pip install -e ".[all]"` | 全部（MCP + 音频 + 原生窗口 + 串口） |
 
 ### 启动
 
@@ -137,9 +146,22 @@ chrono_cue(
 
 | 通道 | 实现 | 适用 |
 |---|---|---|
-| 听觉 | 预渲染 WAV，非阻塞播放 | 默认；不占用视觉通道 |
+| 听觉 | 非阻塞音频，多种后端（见下） | 默认；不占用视觉通道 |
 | 视觉 | 置顶窗口 / 浏览器面板 / 终端 | 噪音环境、听觉受限 |
 | 触觉 | HTTP 源可对接移动端震动 | 视觉与听觉均不可用时 |
+
+音频后端按精度分级，`chrono doctor` 会报告实际选中的后端：
+
+| 后端 | 平台 | 实现 | 精度 |
+|---|---|---|---|
+| `sample` | 全平台 | 常驻 PortAudio 流，按帧偏移混音 | 采样级（`play()` 中位 0.006 ms） |
+| `wav` | Windows | `winsound` 异步播放预渲染 WAV | 设备级（`play()` 中位 0.2 ms） |
+| `cmd` | 全平台 | 外部播放器进程（`afplay` / `pw-play` / `aplay` / `ffplay`） | **近似**（进程启动 10–250 ms 抖动） |
+| `bell` | 全平台 | ASCII BEL，由终端发声 | 未知 |
+| `null` | 全平台 | 静音 | —— |
+
+`--audio` 可强制指定后端；指定本平台不提供的后端会**报错而非静默替换**——
+静默降级到 `cmd` 会让一次测量运行带上错误的精度等级。
 
 ## 部署拓扑
 
@@ -155,7 +177,8 @@ chrono_cue(
 src/chrono_handoff/
 ├── clock.py        单调时钟、亚毫秒落点、无漂移拍点网格
 ├── model.py        CuePlan / SignalSpec / WindowSpec / Event
-├── cue.py          非阻塞音频 + 终端倒计时
+├── audio.py        跨平台非阻塞音频（后端分级 + 采样级混音）
+├── cue.py          提示通道（音频转出 + 终端倒计时）
 ├── inputs.py       观测源：控制台 / stdin / HTTP / 串口 / 合成
 ├── effectors.py    执行器抽象：人类 / 串口 / HTTP / 日志
 ├── calibrate.py    人类偏移估计（median + MAD + 截断）
@@ -177,6 +200,7 @@ src/chrono_handoff/
 
 ```bash
 chrono selftest                       # 核心机制，10 项
+python scripts/e2e_audio.py           # 音频后端：混音/选择/非阻塞不变量
 python scripts/e2e_panel.py           # 面板 HTTP 全链路
 python scripts/e2e_window.py          # 原生窗口
 python scripts/e2e_ui_layout.py       # 布局几何
@@ -194,7 +218,9 @@ Windows 11 / CPython 3.13，详见 [`docs/implementation-notes.md`](implementati
 |---|---|
 | 拍点落点偏差（中位 / p99） | 0.02 ms / 2.3 ms |
 | 40 拍 @50 ms 累计漂移 | +0.01 ms（绝对格点，不累积） |
-| 单拍音频调用开销 | 0.2–0.4 ms（非阻塞） |
+| 单拍音频调用开销 | `sample` 0.006 ms / `wav` 0.2 ms（非阻塞） |
+| 跨平台后端节拍落点 | 中位 0.016 ms，与 Windows 原生后端等价 |
+| 音频流欠载 | 0（60 s 连续运行） |
 | 按压时刻记录精度 | 0.5 ms |
 | 停滞网格行为 | 丢拍不爆发，不追帧 |
 
@@ -211,7 +237,7 @@ Windows 11 / CPython 3.13，详见 [`docs/implementation-notes.md`](implementati
 | 浏览器面板 | 完全支持 | 完全支持 |
 | 串口 / HTTP 观测 | 完全支持 | 完全支持 |
 | 原生窗口外观 | 圆角 / 亚克力 / 主题描边 | 降级为系统默认外观 |
-| 音频提示 | 预渲染 WAV | 降级为 ASCII 响铃 |
+| 音频提示 | `wav` 或 `sample` | `sample`（需 `sounddevice`），否则 `cmd`/`bell` |
 | 控制台按键观测 | 支持 | 降级为 stdin 行输入 |
 
 ## 文档

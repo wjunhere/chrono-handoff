@@ -39,4 +39,7 @@ Thumbs.db
 # --- 临时 -------------------------------------------------------------------
 *.tmp
 *.bak
-_*.py
+# One-off scratch scripts the agent drops at the repo root.  Scoped to the
+# root on purpose: an unscoped `_*.py` also swallows real shared helpers such
+# as scripts/_wininput.py.
+/_*.py
