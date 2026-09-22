@@ -43,8 +43,11 @@ chrono daemon --window --background
 先手动试一次：
 
 ```bash
-chrono cue --instruction "按一下开发板上的 RESET 键" --in 6 --paused
+chrono demo --instruction "按一下开发板上的 RESET 键" --in 6 --paused
 ```
+
+> `chrono demo` 会同时起面板并装填一次提示（`--paused` 表示等面板上的 Start 键）。
+> 若已有 daemon 在跑，用 `chrono submit` 提交计划，或 `chrono panel` 只开面板。
 
 窗口弹出并进入 `prepared` 状态，点 **Start** 开始倒计时。
 

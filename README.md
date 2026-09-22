@@ -1,378 +1,244 @@
 # chrono-handoff
 
-> **时间锚定的人机动作交接** —— 让 AI agent 与人类在物理世界的动作上精确对齐
+> 时间锚定的人机动作交接组件 —— 让 AI agent 驱动人类在指定时刻执行物理动作。
 
-## 一句话
+[![Python](https://img.shields.io/badge/python-3.10%2B-blue)](#要求)
+[![License](https://img.shields.io/badge/license-MIT-green)](LICENSE)
 
-Agent 无法直接改变物理世界，而人类的动作延迟不可预测 —— 传统做法是"人做完 → 通知 agent → agent 反应"，这个链路慢到注定失败（LLM 一轮推理 5~30 秒）。**本项目的核心主张是：把耦合方式从"事件触发"改为"时间触发"** —— agent 提前提交一份带时刻的行动计划，由独立的高速进程精确执行，倒计时只是给人类的时间锚点，传感器回读用来闭环确认。
+## 概述
 
----
+LLM agent 无法直接作用于物理世界，而人类操作者的动作延迟不可预测。若采用
+**事件触发**耦合（人完成动作 → 通知 agent → agent 推理 → agent 下发指令），
+LLM 的单轮推理耗时（5–30 s）将完整地落在关键路径上，无法满足秒级时序窗口。
 
-## 一、问题
+本组件将耦合方式改为 **时间触发**：agent 提交一份声明式的动作计划
+（时刻，动作）序列，由独立于 agent 会话生命周期的 **conductor 进程**持有
+单调时钟并按绝对时刻执行；倒计时面板作为人类操作者的时间基准，传感器回读
+用于闭环确认。
 
-### 1.1 根因：耦合方式错了
+核心约束：**conductor 不得阻塞等待 LLM**。agent 调用即在毫秒级返回，
+计划提交完成后即可结束会话轮次。
 
-| 耦合方式 | 机制 | 结局 |
-|---------|------|------|
-| **事件触发**（现状） | 人类动作 → 通知 agent → agent 推理 → agent 发命令 | ❌ **必然失败** |
-| **时间触发**（本项目） | 双方预先约定时刻 → 各自在 T 时刻行动 | ✅ 延迟被"提前约定"抵消 |
+## Quickstart
 
-事件触发链条里的致命数字：
+### 要求
 
-| 环节 | 耗时 |
-|------|------|
-| LLM 一次推理 turn | **5 ~ 30 秒** |
-| 人类执行一个物理动作（按按钮） | 0.1 ~ 1 秒 |
-| 物理世界留给你的窗口（例：PMON 引导菜单） | **3 秒** |
+- Python 3.10+
+- 可选：`pywebview`（独立原生窗口）、`pyserial`（串口观测）
 
-**LLM 的反应时间比物理窗口长一个数量级。** 这不是"优化一下就好"的问题，是架构性的不匹配。
+### 安装
 
-### 1.2 真实案例（实机踩坑记录）
-
-详见 [`case-studies/loongson-2k1000.md`](case-studies/loongson-2k1000.md)。
-
-龙芯 2K1000LA 开发板的 PMON 引导程序 `bootdelay = 3`，只有 3 秒窗口能按 `c` 中断默认启动进入引导命令行。实际记录：
-
-```
-用户按 Reset
-  ↓
-板子启动（如果 3 秒内没按到 c，就启动到 Loongnix，窗口永久丢失）
-  ↓
-agent 通过串口发现板子已启动       ← 已经过去 30+ 秒
-  ↓
-agent 推理"我该做什么"             ← 又过去 5~30 秒
-  ↓
-❌ 太晚了
+```bash
+git clone https://github.com/wjunhere/chrono-handoff.git
+cd chrono-handoff
+pip install -e .
+chrono selftest          # 机制自检，预期 10/10
 ```
 
-**结论**：agent 永远不可能"及时反应"于一次物理动作。
+### 启动
 
----
-
-## 二、核心洞察
-
-### 2.1 把不确定性搬到各自擅长的域
-
-| 主体 | 擅长的 | 不擅长的 |
-|------|--------|---------|
-| **人类** | 跟随节拍（±50ms 级，尤其配声音提示） | 记住精确时刻、长时间保持警觉 |
-
-> ⚠️ "±50ms" 来自反应时范式的文献值，本项目自己的 M1 实测待跑（见 [`docs/m1.md`](docs/m1.md)）。
-| **机器** | 精确定时（±1ms 级）、无条件重复 | 理解意图、临场决策 |
-
-所以：**让 LLM 提前决策（它擅长），让定时器掌控时刻（它擅长），让人跟随节拍（他擅长）。**
-
-### 2.2 关键修正：倒计时不是给 LLM 看的 ⚠️
-
-这是最容易做错的地方：
-
-```
-❌ 直觉版（错的）：
-   倒计时归零 → LLM 收到通知 → LLM 思考(5-30s) → 发命令
-   ← 延迟原封不动地回来了！
-
-✅ 正确版：
-   LLM 提前提交计划(timeline) ──► 独立定时进程 ──► 归零时立即发命令(ms 级)
-                                      │
-                                      └──► 用户看倒计时 → 归零时按 Reset
+```bash
+chrono doctor                       # 环境探测：时钟 / 音频 / 控制台 / 串口
+chrono daemon --window --background # conductor + 原生提示窗口 + IPC
 ```
 
-> **这个组件必须是一个独立于 LLM turn 的进程。** 漏掉这一点，倒计时只是个装饰品。
+`--window` 托管常驻置顶窗口；cue 触发时窗口自动前置。
 
-### 2.3 这个模式有正式名字
+### 触发一次提示
 
-**`Two-Rate Cloud-Brain / Edge-Controller Split`**（Agent Patterns Catalog）
-
-原文定义（精准命中本场景）：
-
-> **A single model cannot be both the deliberate planner and the real-time motor loop.**
->
-> 慢规划器（大模型，几 Hz）输出紧凑的 latent plan；快控制器（小模型，50~100 Hz）读当前 plan + 传感器，以原生控制率生产动作，**永不阻塞等待慢规划器**。
-
-它明确写出的**禁止事项**：
-
-> The fast controller **may not block waiting on the slow planner**; it must act on the last posted latent plan, and when no fresh plan has arrived it must **keep tracking the previous one or fall back to a safe hold rather than stall**.
-
-#### ⚠️ 本项目必须修正它的一半（实现后确认）
-
-这条规则的后半句 —— "无新计划时**继续跟踪旧计划**" —— **在本项目里不成立**。
-
-原模式里"旧计划"是电机指令，重放它顶多多走一格；本项目里快控制器的输出端挂着**人**，而"上一个人类动作"就是"上一次按了 Reset"。重放它的语义是**让这个人再按一次复位键** —— 完全不同的物理事件，可能造成真实损坏。
-
-所以本项目对 Two-Rate 是**选择性继承**：
-
-| 规则 | 本项目 |
-|------|--------|
-| 不阻塞等待慢规划器 | ✅ 完全继承（这是整个项目的立足点） |
-| 无新计划时跟踪旧计划 | ❌ **改为 safe hold**：提示人类"停止动作，等待新指令" |
-| 回落到安全状态 | ✅ 继承 |
-
-代码里这条以 `HumanEffector.caps().repeatable = False` 明确表达，而串口/GPIO 等机器执行器允许重放 —— 这恰好就是"在窗口内扫射"与"重放人类动作"的本质区别。
-
----
-
-## 三、架构
-
-### 3.1 三层职责分离
-
-```
-┌──────────────────────────────────────────────────────┐
-│  第一层：慢规划器（LLM，5~30s 一次）                    │
-│  职责：理解意图、分析现状、决定做什么、**提前提交计划**   │
-│  输出：一份声明式的 timeline（时刻, 动作）序列           │
-└────────────────────────┬─────────────────────────────┘
-                         │ timeline（一次性提交，不阻塞）
-                         ▼
-┌──────────────────────────────────────────────────────┐
-│  第二层：快控制器（独立进程，ms 级）  ★核心             │
-│  职责：渲染倒计时 UI / 声音提示 / 按时刻精确执行动作      │
-│  约束：**绝不阻塞等待 LLM**；窗口内重复尝试；缺计划时保持 │
-└────────────────────────┬─────────────────────────────┘
-                         │
-          ┌──────────────┴──────────────┐
-          ▼                             ▼
-┌─────────────────────┐      ┌─────────────────────────┐
-│  人类（±200ms 抖动） │      │  物理世界（串口/GPIO/网） │
-│  倒计时归零 → 按按钮  │      │  传感器回读 → 闭环确认    │
-└─────────────────────┘      └─────────────────────────┘
-```
-
-### 3.2 映射到本项目的实践
-
-| Two-Rate 模式要素 | 本项目的对应物 |
-|------------------|--------------|
-| 慢规划器（云端大模型） | **LLM agent** |
-| 快控制器（板上小模型） | **`boot_capture2.py`**（Python，0.3s 粒度轮询） |
-| 物理身体 | 开发板 + 串口 + **操作员的手** |
-| latent plan | 引导命令序列 |
-| "不许阻塞等待" | 实测教训：**"猜时间等待"失败 → 改成抢占轮询** |
-| "缺计划时保持旧计划" | ❌ **本项目不继承**：人类执行器不可重放，改为 safe hold（见 §2.3 修正） |
-
----
-
-## 四、协议设计
-
-### 4.1 接口形态（草案）
-
-```jsonc
-sync_action({
+```bash
+chrono submit --json '{
+  "id": "reset-demo",
   "instruction": "按一下开发板上的 RESET 键",
-  "countdown_seconds": 5,
-  "cue": "beep",                                  // ★ 声音提示（见 §5.2 的实证依据）
+  "lead_s": 3,
+  "ioi_ms": 500,
+  "tail_beats": 6,
+  "target_in_s": 8,
+  "duration_s": 25
+}'
+```
 
-  "expect_signal": {                              // ★ 闭环：等物理世界确认
-    "serial": "COM8",
-    "pattern": "PMON2020|command-line",
-    "timeout": 60
-  },
+返回 `run_id` 并立即退出；计划在 conductor 中执行。
 
-  "on_window": {                                  // ★ 提前注册的行动计划
-    "start": "T+8s",
-    "end": "T+11s",
-    "interval_ms": 300,
-    "actions": ["send c"]
-  },
+```bash
+chrono status reset-demo            # 当前状态
+chrono observe reset-demo           # 增量读取事件日志
+chrono cancel reset-demo            # 中止
+```
 
-  "verify": {                                     // ★ 验证动作是否真的生效
-    "serial": "COM8",
-    "pattern": "PMON>",
-    "timeout": 20
+### 接入 Pi agent
+
+在 `~/.pi/agent/mcp.json` 中注册：
+
+```json
+{
+  "mcpServers": {
+    "chrono-handoff": {
+      "command": "chrono",
+      "args": ["mcp"],
+      "lifecycle": "lazy",
+      "searchKeywords": {
+        "*": ["human in the loop", "countdown timer", "operator cue", "timing"],
+        "chrono_cue": ["ask human physical action", "pop up panel", "press button", "reset device"]
+      }
+    }
   }
-})
-// 返回：事件时间线 + 验证结果，而不是"请等待"
+}
 ```
 
-### 4.2 与"阻塞式等人"的根本区别
+MCP 服务端为瘦客户端，首次调用时自动拉起 daemon（`CHRONO_AUTOSTART=0` 可关闭）。
+完整步骤见 [`docs/agent-setup.md`](agent-setup.md)。
 
-| 维度 | 现有 HITL MCP 工具 | chrono-handoff |
-|------|-------------------|----------------|
-| 解决的问题 | "我不知道你**何时做完**" | "我需要在**精确时刻**发命令" |
-| 时间语义 | 无 | 有（时刻 + 窗口 + 偏移） |
-| 执行主体 | LLM（阻塞在 tool call 上） | **独立进程** |
-| 计划提交 | 事后 | **事前** |
-| 动作触发 | 人类完成时 | **时间到达时**（不等人类） |
-| 闭环 | 人类点击"完成" | **传感器回读验证** |
+## 用法
 
----
+### MCP 工具
 
-## 五、四条设计原则
+| 工具 | 用途 |
+|---|---|
+| `chrono_cue` | 提示人类在指定时刻执行物理动作，立即返回 `run_id` |
+| `chrono_submit` | 提交声明式动作计划（多动作 / 带窗口 / 带闭环） |
+| `chrono_observe` | 增量读取运行事件日志 |
+| `chrono_wait` | 有界等待，返回状态快照而非阻塞 |
+| `chrono_status` | 单次运行状态或近期运行列表 |
+| `chrono_cancel` | 中止在途运行 |
+| `chrono_calibrate` | 读取 / 更新人类偏移估计 |
 
-### 原则 1：倒计时必须配"预先提交的行动计划"
-
-LLM 在倒计时**开始之前**就把 `(时刻, 动作)` 序列注册好。这是整个设计的立足点。
-
-### 原则 2：给"窗口"，不给"单点"
+`chrono_cue` 调用示例：
 
 ```
-❌ at: "T+5.000s"                        窗口 0ms，人一抖就废
-✅ at: "T+5s", window: "T+5s..T+8s"      留 3 秒容错
+chrono_cue(
+  instruction = "按一下开发板上的 RESET 键",
+  target_in_s = 6,     # 6 秒后动作应命中
+  lead_s      = 3,     # 倒计时时长
+  ioi_ms      = 500,   # 拍间距
+  tail_beats  = 6      # 命中后脉冲延续
+)
 ```
 
-**人给时间锚点，机器在窗口内扫射** —— 两者互补，而不是让任一方承担全部精度要求。
+### CLI
 
-实测有效做法：0.3 秒间隔持续抢占（75 秒内约 250 次尝试），把 3 秒窗口的命中变成必然。
+| 命令 | 说明 |
+|---|---|
+| `chrono doctor` | 环境能力探测 |
+| `chrono selftest` | 无人工参与的机制自检 |
+| `chrono daemon` | 启动 conductor 常驻进程 |
+| `chrono window` | 原生提示窗口（`--attach` 作为纯显示器） |
+| `chrono submit` | 提交计划 |
+| `chrono observe` / `status` / `wait` / `cancel` | 运行控制 |
+| `chrono verify` | 标记动作已确认生效 |
+| `chrono calibrate` | 人类偏移估计 |
+| `chrono demo` | 交互式提示面板 + 一次提示 |
+| `chrono panel` | 面板连接到运行中的 daemon |
+| `chrono settings` | 查看 / 编辑设置 |
+| `chrono mcp` | 运行 MCP stdio 服务端 |
+| `chrono probe` | M1 实验：拍点栅格下的人类偏移测量 |
 
-### 原则 3：必须有反馈闭环
+### 提示通道
 
-不能只"提示"，还要**验证动作真的发生了**：
+| 通道 | 实现 | 适用 |
+|---|---|---|
+| 听觉 | 预渲染 WAV，非阻塞播放 | 默认；不占用视觉通道 |
+| 视觉 | 置顶窗口 / 浏览器面板 / 终端 | 噪音环境、听觉受限 |
+| 触觉 | HTTP 源可对接移动端震动 | 视觉与听觉均不可用时 |
 
-```
-提示用户按 Reset → 倒计时 → 用户在 T+5s 按
-                              ↓
-                    从串口检测到 "command-line"   ← 确认成功
-                              ↓
-                    若 60s 内未检测到 → 重装填(re-arm) 或报错
-```
+## 部署拓扑
 
-### 原则 4：按窗口量级选层，不要用一种方案打天下
+| 拓扑 | 命令 | 特性 |
+|---|---|---|
+| 分离（推荐） | `daemon --background` + `window --attach 8791` | 窗口仅作显示器，关闭不影响计划执行 |
+| 一体化 | `daemon --window --background` | 单进程，适用于演示 |
+| 浏览器面板 | `chrono demo` | 支持局域网内移动端访问 |
 
-| 窗口宽度 | 方案 | 人能承担吗 |
-|---------|------|-----------|
-| **秒级**（如 PMON 的 3s） | 倒计时 UI + 抢占式容错 | ✅ 可以 |
-| **毫秒级** | 必须上硬件（GPIO 继电器 / PicoHand 类夹具） | ❌ 不能，人做不到 |
-| **任意** | 把关键动作设计成**幂等 + 可重试** | —— 让"错过"不致命 |
-
----
-
-## 六、理论依据
-
-### 6.1 时间触发 vs 事件触发
-
-| 架构 | 优势 | 代价 |
-|------|------|------|
-| 事件触发 | 灵活，对异步事件响应快 | **延迟和抖动依赖总线负载** |
-| 时间触发 | **时间可预测**，同步到全局时钟后延迟/抖动恒定 | 需要时钟同步机制 |
-
-> ⚠️ **一条必须知道的反直觉警告**（Albert et al., TUM）：
-> **没有时钟同步时，时间触发系统的抖动反而可能比事件触发更差。**
->
-> 这直接决定本方案成败：**倒计时的全部价值，取决于"人机共享时钟的精度"**。
-
-### 6.2 人类的定时精度（决定倒计时怎么设计）
-
-| 提示方式 | 人的时间误差 |
-|---------|-------------|
-| 纯视觉倒计时 | ±100 ~ 200 ms |
-| **加声音提示（beep）** | **±50 ms 左右** |
-
-实证研究支持：
-
-- **Adaptive Metronome (GEM)**：25~50% 自适应度增强同步；★ 更高自适应度（70~100%）**只在有听觉反馈时才有帮助**
-- **TANDEM**（ICRA 2021）：神经生物学启发的适应/预期算法，机器人与人类**同步打鼓**，变速下达到人类水平
-- **Robot Thereminist**：耦合振荡器模型使起始误差降低 **10~38%**
-- **Shimon（机器人马林巴）**：**社交头部手势**显著改善变速下的人机同步（单纯手臂手势无效）
-
-> **工程结论**：`cue: "beep"` 是**默认**手段 —— 但理由不是"视觉做不到"（周期性的视觉节拍同样能进入 anticipation 模式），而是**听觉不占用眼睛**：目标场景里操作员正盯着串口输出，视觉 cue 会与被观测对象抢同一个通道，听觉是平行通道。
->
-> 所以声音不是必须的。助听/噪音环境可用视觉（需强 onset 的样式，见 [`docs/m1.md`](docs/m1.md) §4.5），不能看也不能听时用**触觉**（手机震动在同步精度上与听觉相当）。
->
-> 上面的"±150ms → ±50ms"是 reaction-time 范式的文献值，本项目自己的数值待 M1 实测（见 [`docs/m1.md`](docs/m1.md)）。
-
----
-
-## 七、相关项目（调研摘要）
-
-完整调研见 [`docs/related-work.md`](docs/related-work.md)。
-
-| 类别 | 代表项目 | 与本项目的差距 |
-|------|---------|--------------|
-| **A. 请求人类做物理动作的 MCP** | `human-intervention-mcp`、`call-a-human-mcp`、`human-mcp` | ❌ **无时间精确性**，只解决"不知你何时做完" |
-| **B. 倒计时 / 时间触发原语** | `T-minus`、`swarm-tminus`、`tminus-dispatcher`（beat + 偏移） | 面向多 agent 协作，未接入物理执行与人类提示 |
-| **C. 硬件测试框架的操作员提示** | `Jumpstarter`（`pause`/`expect`/`send`/**`reset`**）、`litmus` | ⭐ **同领域刚需**，但未与 LLM agent 结合 |
-| **D. 从物理层消灭问题** | `PicoHand`（GPIO 模拟 RESET 键，zero human intervention）、`mcp-kr-controller`（`wait_di_trigger`）、`UnitApi/MCP` | **最彻底**：不要人按，让机器按 |
-| **E. 理论** | Kopetz / Albert：时间触发 vs 事件触发；GEM / TANDEM：人机节拍同步 | 提供依据，未工程化 |
-
-> **本项目的定位**：把 **A 的"人类接口" + B 的"时间语义" + C 的"硬件领域原语" + E 的"理论"** 缝合成一个给 LLM agent 用的组件，并明确 **D 是它的极限替代方案**。
-
----
-
-## 八、目录
+## 目录结构
 
 ```
-chrono-handoff/
-├── README.md                       ← 本文件：核心想法
-├── pyproject.toml
-├── src/chrono_handoff/             ← ★ M1 已实现，可直接运行
-│   ├── clock.py                    ← 单调时钟 + 亚毫秒 spin 落点 + 无漂移网格
-│   ├── model.py                    ← CuePlan / SignalSpec / WindowSpec / Event
-│   ├── cue.py                      ← 非阻塞音频（预渲染 WAV + PlaySound ASYNC）+ 终端倒计时
-│   ├── inputs.py                   ← 观测源：按键 / stdin / http / 串口 / 合成
-│   ├── calibrate.py                ← 人类偏移估计（median+MAD+夹紧，抗异常值）
-│   ├── effectors.py                ← 执行器抽象：人 / 串口 / HTTP / 日志
-│   ├── conductor.py                ← ★ 快控制器：网格、窗口、闭环、事件日志
-│   ├── daemon.py                   ← 脱离 MCP 生命周期的常驻进程
-│   ├── mcp_server.py               ← MCP 表面（瘦客户端）+ IPC
-│   ├── webui.py                    ← ★ 提示面板服务端（HTTP + 设置 API）
-│   ├── window.py                   ← ★ 独立桌面窗口（WebView2 + 原生窗口控制）
-│   ├── winshell.py                 ← Windows 11 原生悬浮边框（圆角/亚克力/主题描边）
-│   ├── remote.py                   ← 跨进程 conductor 代理（窗口作纯显示器）
-│   ├── settings.py                 ← 设置持久化（损坏也不影响出提示）
-│   ├── statics/panel.html          ← ★ 单文件前端：精确音频 + 响应式 UI + 自绘窗口把手
-│   ├── analyze.py                  ← 离线分析 journal
-│   ├── probe.py                    ← M1 实验协议：拍点栅格 + 偏移统计
-| `cli.py`                      ← `python -m chrono_handoff.cli`（doctor/probe/selftest/daemon/…）
-├── docs/
-│   ├── component.md                ← ★ 交互式提示组件：怎么用、怎么接
-│   ├── m1.md                       ← ★ 怎么跑 M1 真实验、怎么读结果
-│   ├── implementation-notes.md     ← ★ 实现后才知道的坑与实测数字
-│   ├── problem.md                  ← 问题定义与量化
-│   ├── design.md                   ← 协议与接口详细设计
-│   ├── related-work.md             ← 相关项目调研
-│   └── theory.md                   ← 理论根基
-└── case-studies/
-    └── loongson-2k1000.md          ← 实机案例：龙芯开发板 PMON 引导
+src/chrono_handoff/
+├── clock.py        单调时钟、亚毫秒落点、无漂移拍点网格
+├── model.py        CuePlan / SignalSpec / WindowSpec / Event
+├── cue.py          非阻塞音频 + 终端倒计时
+├── inputs.py       观测源：控制台 / stdin / HTTP / 串口 / 合成
+├── effectors.py    执行器抽象：人类 / 串口 / HTTP / 日志
+├── calibrate.py    人类偏移估计（median + MAD + 截断）
+├── conductor.py    快控制器：拍点网格、动作窗口、闭环、事件日志
+├── daemon.py       常驻进程与单实例守卫
+├── mcp_server.py   MCP 表面 + IPC 客户端
+├── remote.py       跨进程 conductor 代理
+├── webui.py        提示面板服务端
+├── window.py       原生置顶窗口（WebView2）
+├── winshell.py     Windows 11 原生外观（圆角 / 亚克力 / 主题描边）
+├── settings.py     设置持久化
+├── statics/        单文件前端 + 本地字体
+├── probe.py        M1 实验协议
+├── analyze.py      离线日志分析
+└── cli.py          命令行入口
 ```
 
----
-
-## 九、一句话总结
-
-> **Agent 不该"及时反应"，应该"提前安排"。**
-> 把人类当成一个有抖动、需要显式提示、**但偏移可学习**的执行器，纳入一个时间触发的协调协议 —— 这是本次交互中浮现出的核心想法。
-
----
-
-## 十、现在可以跑什么
-
-**交互式提示组件已可用** —— 独立桌面窗口（无边框/圆角/毛玻璃/置顶/可拖动缩放/自定义设置）或浏览器面板。
-**接入 agent 的三步教程见 [`docs/agent-setup.md`](agent-setup.md)**；组件细节见 [`docs/component.md`](docs/component.md)。
-详见 [`docs/component.md`](docs/component.md)。
+## 验证
 
 ```bash
-cd path/to/chrono-handoff && export PYTHONPATH=src
-
-# ★ 推荐：conductor 常驻 + 独立窗口只作显示器（关掉窗口 cue 照样打）
-python -m chrono_handoff.cli daemon --background
-python -m chrono_handoff.cli window --attach 8791
-
-# 一体化（一个进程同时是 conductor + 窗口；适合演示）
-python -m chrono_handoff.cli daemon --window --background
-
-# 浏览器面板（也能手机同局域网用）
-python -m chrono_handoff.cli demo --paused
+chrono selftest                       # 核心机制，10 项
+python scripts/e2e_panel.py           # 面板 HTTP 全链路
+python scripts/e2e_window.py          # 原生窗口
+python scripts/e2e_ui_layout.py       # 布局几何
+python scripts/e2e_resize.py          # 窗口缩放
+python scripts/e2e_theme_drag.py      # 主题对比度与拖拽隔离
+python scripts/e2e_daemon_window.py   # 一体化模式
+python scripts/e2e_split_mode.py      # 分离模式
 ```
 
-M1 测量装置也已实现，自检 10/10 通过。
+## 性能
 
-```bash
-cd path/to/chrono-handoff && export PYTHONPATH=src
+Windows 11 / CPython 3.13，详见 [`docs/implementation-notes.md`](implementation-notes.md)。
 
-# `chrono` 是 `pip install -e .` 之后才存在的命令；
-# 没安装时用 `python -m chrono_handoff.cli`（下面两种写法等价）
-python -m chrono_handoff.cli doctor                 # 环境自检（console / 音频 / 时钟 / 串口）
-python -m chrono_handoff.cli selftest               # 验证机器：10 项，含 3 条 bug 回归测试
-python -m chrono_handoff.cli probe --trials 30 --conditions both,visual   # ★ 真实验
+| 指标 | 实测 |
+|---|---|
+| 拍点落点偏差（中位 / p99） | 0.02 ms / 2.3 ms |
+| 40 拍 @50 ms 累计漂移 | +0.01 ms（绝对格点，不累积） |
+| 单拍音频调用开销 | 0.2–0.4 ms（非阻塞） |
+| 按压时刻记录精度 | 0.5 ms |
+| 停滞网格行为 | 丢拍不爆发，不追帧 |
 
-# 想直接用 `chrono` 命令：
-pip install -e .            # 然后 `chrono doctor` 即可
-```
+约束：GIL 是精度上限，CPU 密集任务须置于独立进程；音频设备输出延迟
+（约 10–50 ms）尚未测量，该分量被吸收进校准偏移。
 
-先读 [`docs/m1.md`](docs/m1.md)（怎么跑、怎么读结果），
-再看 [`docs/implementation-notes.md`](docs/implementation-notes.md)（实现后才知道的坑与实测数字）。
+## 平台支持
 
----
+计时核心为纯标准库实现，可移植。人类提示通道为 Windows 优先：
+
+| 组件 | Windows | Linux / macOS |
+|---|---|---|
+| 计时核心、MCP、IPC | 完全支持 | 完全支持 |
+| 浏览器面板 | 完全支持 | 完全支持 |
+| 串口 / HTTP 观测 | 完全支持 | 完全支持 |
+| 原生窗口外观 | 圆角 / 亚克力 / 主题描边 | 降级为系统默认外观 |
+| 音频提示 | 预渲染 WAV | 降级为 ASCII 响铃 |
+| 控制台按键观测 | 支持 | 降级为 stdin 行输入 |
+
+## 文档
+
+| 文档 | 内容 |
+|---|---|
+| [`docs/agent-setup.md`](docs/agent-setup.md) | 接入 agent 的完整步骤 |
+| [`docs/component.md`](docs/component.md) | 提示组件使用与集成 |
+| [`docs/design.md`](docs/design.md) | 协议与接口设计 |
+| [`docs/implementation-notes.md`](docs/implementation-notes.md) | 实现细节与实测数据 |
+| [`docs/m1.md`](docs/m1.md) | M1 测量实验方法 |
+| [`docs/theory.md`](docs/theory.md) | 理论依据（时间触发 / 人机节拍同步） |
+| [`docs/problem.md`](docs/problem.md) | 问题定义与量化 |
+| [`docs/related-work.md`](docs/related-work.md) | 相关项目调研 |
+| [`case-studies/loongson-2k1000.md`](case-studies/loongson-2k1000.md) | 实例：龙芯 2K1000LA PMON 引导窗口捕获 |
+
+## 设计要点
+
+- **计划事前提交**：倒计时开始前，`(时刻, 动作)` 序列已注册在 conductor 中；
+  倒计时归零不触发 agent 推理。
+- **窗口而非单点**：计划可指定动作时窗并在窗内重复下发，由机器侧的重复
+  尝试吸收人类抖动。
+- **闭环确认**：`verify` 字段指定回读模式，确认动作实际生效。
+- **人类执行器不可重放**：`HumanEffector.caps().repeatable = False`；
+  缺失新计划时进入安全保持，而非重放上一次人类动作。
 
 ## 许可
 
-代码：MIT。`src/chrono_handoff/statics/fonts/` 内的字体文件（Inter、JetBrains Mono）遵循
-[SIL Open Font License 1.1](https://openfontlicense.org/)，允许再分发与捆绑。
+代码 MIT。`src/chrono_handoff/statics/fonts/` 下的字体文件（Inter、JetBrains Mono）
+遵循 [SIL Open Font License 1.1](https://openfontlicense.org/)，允许再分发与捆绑。
