@@ -226,6 +226,20 @@ python scripts/e2e_desktop_shell.py   # Tauri 桌面外壳（需先 cargo build�
 cd desktop/src-tauri && cargo test    # 外壳几何算式（边方向/夹紧/累计位移/窗口位置与恢复）
 ```
 
+这些在 CI 里自动跑（`.github/workflows/ci.yml`）：
+
+| job | 平台 | 跑什么 |
+|---|---|---|
+| `core` | Ubuntu / Windows / macOS | `basedpyright`、`chrono selftest`、四个无头套件（`e2e_panel`/`e2e_panel_attach`/`e2e_state_paths`/`e2e_audio`）、以及**拆开 wheel 确认 UI 资源在里面** |
+| `windows-ui` | Windows | `cargo build` + `cargo test`，以及需要桌面会话的六个窗口套件（含 `e2e_desktop_shell`） |
+| `shell-off-windows` | Ubuntu / macOS | 外壳能不能在 Windows 之外**编译**并通过几何算式测试 |
+
+没覆盖的，写着以免误读：
+
+- **外壳没有在 macOS/Linux 上“跑起来”过。** 最后一个 job 只证明能编译；真跑还需要各平台自己的侧车（PyInstaller 不能交叉编译）和真实桌面会话。
+- **冻结侧车没有进 CI。** `desktop/sidecar/build.py` 末尾的 `doctor` 只打印、不判定（无论环境如何都返回 0），拿它当门是假的安全感；把它变成真检查是待办。
+- 窗口套件的合成输入在某些机器上会掉事件，套件会把那类断言报成 `SKIP` 并汇总，**不会**报成通过——所以看到绿色也请看一眼有没有 SKIP。
+
 ## 性能
 
 Windows 11 / CPython 3.13，详见 [`docs/implementation-notes.md`](implementation-notes.md)。

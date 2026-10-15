@@ -1,0 +1,166 @@
+name: CI
+
+# 分三类，因为它们**失败的含义不同**：
+#
+#   core              纯标准库的计时核心。三个平台上都必须过 —— 这是"跨平台"里
+#                     唯一已经有事实支撑的部分。
+#   windows-ui        需要桌面会话的窗口套件（pywebview / WebView2 / 真窗口）。
+#                     只有 Windows runner 有，所以只在 Windows 上跑。
+#   shell-off-windows 外壳能不能在 Windows 之外**编译**。这条目前是"声明"而不是
+#                     "事实"：外壳从来没在 Windows 之外构建或运行过，这个 job 的
+#                     第一次运行就是它的第一次运行。它的价值正在于此。
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+# 同一分支的新推送取消旧任务，别让排队堆积
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+env:
+  # Windows runner 的默认编码不是 UTF-8，而 e2e 里到处都是中文与 emoji；
+  # 子进程自己再写一次（有些套件是 setdefault，这里先给上）。
+  PYTHONIOENCODING: utf-8
+
+jobs:
+  core:
+    name: core (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      # 一个平台挂了也要把另外两个跑完，否则拿不到完整的跨平台信号
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest, macos-latest]
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          # 3.13 而不是 3.12：实测 3.12 会让 selftest 间歇性失败（见 docs/agent-setup.md §一.0）
+          python-version: "3.13"
+
+      - name: Install
+        run: |
+          python -m pip install --upgrade pip
+          pip install -e ".[mcp]"
+          pip install basedpyright
+
+      - name: Type check
+        # 0 error 是硬要求（standard 模式）。这条在任何平台上都成立，
+        # 且比单测便宜得多，所以放在最前面。
+        run: basedpyright src scripts
+
+      - name: Self-check
+        run: chrono selftest
+
+      - name: Headless suites
+        # 这五个只碰 HTTP 与文件系统：不开窗口、不需要显示器、不需要音频设备。
+        # 窗口套件在 windows-ui 里，不在这里假装能跑。
+        shell: bash
+        run: |
+          set -e
+          python scripts/e2e_panel.py
+          python scripts/e2e_panel_attach.py
+          python scripts/e2e_state_paths.py
+          python scripts/e2e_audio.py
+
+      - name: The wheel must contain its UI
+        # 这里曾经是 `package-data = ["statics/*.wav"]`，而 statics 下根本没有 .wav
+        # 文件 —— 于是 glob 什么都没匹配到，而真正需要的 panel.html、字体、图标一个
+        # 都没进包，`pip install` 之后窗口无页面可显示。真正打一次包拆开看是唯一可靠
+        # 的检查。
+        shell: bash
+        run: |
+          set -e
+          pip wheel . --no-deps -w dist
+          python -m zipfile -l dist/*.whl > wheel.txt
+          for f in chrono_handoff/statics/panel.html \
+                   chrono_handoff/statics/icon.svg \
+                   chrono_handoff/statics/fonts/inter-latin.woff2; do
+            if ! grep -q "$f" wheel.txt; then
+              echo "::error::wheel is missing $f"
+              exit 1
+            fi
+          done
+          echo "wheel carries all three UI assets"
+
+  windows-ui:
+    name: windows window suites
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+
+      - name: Install
+        # .[all] 才有 pywebview；窗口套件缺了它会**自行跳过并返回 0**，
+        # 那样这个 job 会在什么都没测的情况下变绿。
+        run: |
+          python -m pip install --upgrade pip
+          pip install -e ".[all]"
+
+      - name: Build the shell
+        # runner 自带 Rust 工具链；没有就当场失败，而不是让下一步报一个看不懂的错
+        run: |
+          rustc --version
+          cargo build --manifest-path desktop/src-tauri/Cargo.toml
+
+      - name: Shell geometry tests
+        # 这些是纯算式（边方向 / 夹紧 / 累计位移 / 窗口位置与恢复），不需要窗口，
+        # 所以它们必须过；窗口套件里那份是"顺带也验一次"。
+        run: cargo test --manifest-path desktop/src-tauri/Cargo.toml
+
+      - name: Window suites
+        shell: bash
+        run: |
+          set -e
+          python scripts/e2e_window.py
+          python scripts/e2e_ui_layout.py
+          python scripts/e2e_theme_drag.py
+          python scripts/e2e_split_mode.py
+          python scripts/e2e_daemon_window.py
+          python scripts/e2e_desktop_shell.py
+
+  shell-off-windows:
+    name: shell compiles off Windows (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Linux system libraries
+        # Tauri 在 Linux 上要在编译期链 webkit2gtk/gtk，缺一个就是一条难读的
+        # pkg-config 报错。这是 Tauri 官方列出的依赖集合。
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libwebkit2gtk-4.1-dev libgtk-3-dev \
+                                  libayatana-appindicator3-dev librsvg2-dev
+
+      - name: Toolchain
+        run: rustc --version && cargo --version
+
+      - name: Geometry tests
+        run: cargo test --manifest-path desktop/src-tauri/Cargo.toml
+
+      - name: Build the binary
+        run: cargo build --manifest-path desktop/src-tauri/Cargo.toml
+
+      - name: Report what this proves
+        # 这个 job 证明"能编译能过算式测试"，**不**证明外壳能在 macOS/Linux 上跑起来：
+        # 那还需要各自的侧车（PyInstaller 不能交叉编译）和真实桌面会话。
+        run: |
+          echo "compiled and tested on ${{ runner.os }};"
+          echo "running the shell here is not covered -- it needs a per-platform"
+          echo "sidecar and a real desktop session."
