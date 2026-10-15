@@ -4,6 +4,11 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>chrono-handoff · cue</title>
+<!-- Same mark as the desktop shell's icon, and the same file (statics/icon.svg)
+     is what generates the .ico/.icns, so the tab and the taskbar cannot drift
+     apart.  Relative href on purpose: it resolves against whatever is serving
+     the page -- the conductor over HTTP, or the shell's own bundle. -->
+<link rel="icon" type="image/svg+xml" href="icon.svg">
 <!-- Fonts are served locally (see webui.py).  The component must render the
      same on an isolated network as on the open internet, and a hardware cue is
      exactly the kind of thing that runs on an air-gapped bench. -->
@@ -29,181 +34,299 @@
 </style>
 <style>
     /* ===================================================================
-       Design tokens.  Palette from ui-ux-pro-max "Developer Tool / IDE";
-       style direction "Glassmorphism" (blur 10-20px, 1px light border,
-       layered translucency, deliberate z-depth).
+       chrono-handoff cue panel
+
+       An instrument, not a web page.  It exists so one person at a bench
+       knows, without reading, the exact instant to press something.  That
+       single job drives every decision below:
+
+         * the countdown is the largest thing on the surface and nothing
+           competes with it
+         * the beat rail is the only colour-coded element, because colour
+           there carries real information (which beat is GO)
+         * one accent for the whole panel -- GO.  There is no second accent
+           to dilute it
+         * structure is drawn with hairlines, not with nested cards
+         * every number is tabular, so a changing digit never shifts its
+           neighbours
+
+       Palette: single amber accent on a neutral zinc ramp.  Amber is the
+       only hue in the panel, so "amber means act now" survives in every
+       theme, in peripheral vision, and on a bad bench monitor.
        =================================================================== */
     :root{
-      /* window paint colour + opacity: the theme owns the colour, the opacity
-         setting owns the alpha, so the two can never fight */
-      --win-rgb:15,23,42; --win-alpha:1;
+      /* window paint colour + opacity: the theme owns the colour, the
+         opacity setting owns the alpha, so the two can never fight. */
+      --win-rgb:11,13,17; --win-alpha:1;
 
-      /* elevation ramp -- dark surfaces get LIGHTER as they rise */
-      --bg:#0f172a;          /* canvas          */
-      --bg2:#131c30;         /* chrome bar      */
-      --surface:rgba(27,35,54,.72);   /* inputs / wells   */
-      --card:rgba(27,35,54,.60);      /* the floating card */
-      --card-hi:rgba(51,65,85,.55);   /* raised element    */
-      --line:rgba(148,163,184,.16);   /* hairline border   */
-      --line2:rgba(148,163,184,.26);
+      /* surfaces, darkest to lightest.  Elevation is expressed by lightness
+         AND by a hairline; never by a drop shadow. */
+      --bg:#0b0d11;
+      --well:rgba(255,255,255,.045);      /* inputs, the ghost button */
+      --raised:rgba(255,255,255,.075);    /* the GO button at rest */
+      --card:rgba(21,24,31,.62);          /* the floating card */
+      --card-2:rgba(28,32,41,.72);        /* title bar, raised chrome */
 
-      --fg:#f8fafc;
-      --dim:#cbd5e1;         /* secondary text -- 9.8:1 on --bg */
-      --dim2:#94a3b8;        /* muted          -- 5.6:1 on --bg */
+      --line:rgba(255,255,255,.10);       /* hairline */
+      --line-2:rgba(255,255,255,.18);     /* hairline under the pointer */
 
-      --accent:#60a5fa; --accent-ink:#0b1220;
-      --go:#fbbf24; --go-ink:#2a1c02;
-      --ok:#22c55e; --warn:#ef4444;
+      --fg:#f4f4f6;
+      --dim:#a8adb9;                      /* secondary */
+      --dim2:#787e8c;                     /* tertiary */
 
-      /* glass */
-      --blur:18px; --blur-soft:10px;
-      --glass-edge:rgba(255,255,255,.10);
-      --shadow:0 18px 50px rgba(0,0,0,.55), 0 2px 8px rgba(0,0,0,.35);
-      --shadow-sm:0 4px 14px rgba(0,0,0,.35);
+      /* The one accent.  Amber = act now.  Its ink is a dark brown so the
+         amber surface can stay bright without ever failing contrast. */
+      --accent:#ffc247;
+      --accent-ink:#251803;
+      --accent-dim:rgba(255,194,71,.16);
 
-      --r-lg:18px; --r-md:12px; --r-sm:9px;
-      --tb:40px;
-      --dur:.18s;
+      /* Semantic state.  Never used decoratively: a colour on this panel
+         always means a state, never "this row looks nice". */
+      --ok:#4ade80;
+      --bad:#f87171;
+
+      --glass-edge:rgba(255,255,255,.09);
+      --shadow:0 22px 60px rgba(0,0,0,.58), 0 2px 8px rgba(0,0,0,.4);
+
+      /* ONE radius scale for the whole panel. */
+      --r:14px; --r-sm:9px; --r-pill:99px;
+
+      --tb:38px;
+      --dur:.16s;
       --ease:cubic-bezier(.2,.7,.3,1);
+
+      --mono:"JetBrains Mono","Cascadia Code","Fira Code",ui-monospace,SFMono-Regular,Consolas,"Noto Sans SC",monospace;
     }
+
     *{box-sizing:border-box;margin:0;padding:0}
-    html{height:100%;overflow:hidden;background:rgb(var(--win-rgb))}
+    /* The opacity setting is delivered as --win-alpha by window.py (it sets it
+       on documentElement, so it wins over the theme blocks below).  It has to
+       be CONSUMED here or the slider is inert: a control that looks live and
+       does nothing is worse than no control. */
+    html{height:100%;overflow:hidden;
+      background:rgba(var(--win-rgb),var(--win-alpha))}
     body{height:100%;overflow:hidden;color:var(--fg);
       font:14.5px/1.5 "Inter","Noto Sans SC","Microsoft YaHei UI","Segoe UI",system-ui,-apple-system,sans-serif;
       background:transparent;
       -webkit-user-select:none;user-select:none;
       -webkit-font-smoothing:antialiased;text-rendering:optimizeLegibility;
-      /* Inter is a variable font: let it pick the optical size for large text,
-         and never fake a weight that was not loaded. */
       font-optical-sizing:auto;font-synthesis:none}
 
-    /* Anything that is clickable gets a pointer (checklist item). */
     button,input,select,.sw,.grip{cursor:pointer}
-    /* Visible focus for keyboard users on every control. */
     :focus-visible{outline:2px solid var(--accent);outline-offset:2px;border-radius:6px}
+
+    /* Motion on this panel is functional only: it shows that the beat
+       landed, that a press registered, that a surface opened.  Everything
+       collapses under prefers-reduced-motion. */
     @media (prefers-reduced-motion: reduce){
       *{transition-duration:.01ms!important;animation-duration:.01ms!important}
     }
 
     /* ------------------------------------------------------------ shell grid */
     body.shell{display:grid;grid-template-rows:var(--tb) 1fr;padding:10px;gap:0}
-    /* The card "floats": inset margin + big soft shadow + translucent fill over
-       the real acrylic backdrop behind the window. */
     body.shell .stage{
       position:relative;display:flex;flex-direction:column;min-height:0;
-      border-radius:var(--r-lg);
+      border-radius:var(--r);
       background:var(--card);
       border:1px solid var(--glass-edge);
       box-shadow:var(--shadow);
-      backdrop-filter:blur(var(--blur)) saturate(150%);
-      -webkit-backdrop-filter:blur(var(--blur)) saturate(150%);
+      backdrop-filter:blur(18px) saturate(150%);
+      -webkit-backdrop-filter:blur(18px) saturate(150%);
       overflow:hidden;
     }
     /* hairline sheen along the top edge -- reads as a lit glass surface */
     body.shell .stage::before{
       content:"";position:absolute;inset:0;border-radius:inherit;pointer-events:none;
-      background:linear-gradient(180deg,rgba(255,255,255,.07),rgba(255,255,255,0) 38%);
+      background:linear-gradient(180deg,rgba(255,255,255,.06),rgba(255,255,255,0) 34%);
     }
 
     /* browser-tab mode: same card, centred, no chrome */
     body:not(.shell){display:flex;align-items:center;justify-content:center;padding:20px}
-    body:not(.shell) .stage{width:min(560px,100%);max-height:100%;overflow:auto;
-      border-radius:var(--r-lg);background:var(--card);border:1px solid var(--glass-edge);
-      box-shadow:var(--shadow);backdrop-filter:blur(var(--blur));-webkit-backdrop-filter:blur(var(--blur))}
+    body:not(.shell) .stage{width:min(520px,100%);max-height:100%;overflow:auto;
+      border-radius:var(--r);background:var(--card);border:1px solid var(--glass-edge);
+      box-shadow:var(--shadow);backdrop-filter:blur(18px);-webkit-backdrop-filter:blur(18px)}
 
     /* ------------------------------------------------------------- title bar */
     #titlebar{display:none;align-items:center;gap:2px;padding-left:14px;
       background:transparent;border-bottom:1px solid var(--line);
-      margin:-1px -1px 0;border-radius:var(--r-lg) var(--r-lg) 0 0}
+      margin:-1px -1px 0;border-radius:var(--r) var(--r) 0 0}
     body.shell #titlebar{display:flex}
     #titlebar .drag{flex:1;display:flex;align-items:center;height:100%;min-width:0}
     #titlebar .name{font-size:12.5px;color:var(--dim2);white-space:nowrap;
-      overflow:hidden;text-overflow:ellipsis;letter-spacing:.01em}
-    #titlebar .name.bad{color:var(--warn)}
+      overflow:hidden;text-overflow:ellipsis;letter-spacing:.01em;
+      transition:color var(--dur) var(--ease)}
+    /* The conductor has gone away.  This is the single most important thing
+       the chrome can ever say: without it the operator waits for a cue that
+       cannot arrive.  Say it in the accent-free danger colour, not in grey. */
+    #titlebar .name.bad{color:var(--bad);font-weight:500}
     .wbtn{width:42px;height:100%;border:0;background:transparent;color:var(--dim2);
       display:grid;place-items:center;border-radius:var(--r-sm);
       transition:background var(--dur) var(--ease),color var(--dur) var(--ease)}
-    .wbtn:hover{background:var(--card-hi);color:var(--fg)}
+    .wbtn:hover{background:var(--raised);color:var(--fg)}
     .wbtn:active{transform:scale(.94)}
-    .wbtn.close:hover{background:var(--warn);color:#fff}
+    .wbtn.close:hover{background:var(--bad);color:#fff}
     .wbtn svg{width:12px;height:12px;stroke:currentColor;stroke-width:1.4;
       fill:none;stroke-linecap:round}
 
     /* ---------------------------------------------------------------- panel */
     .stage{min-height:0;display:flex;flex-direction:column}
     .panel{flex:1 1 auto;min-height:0;display:grid;
+      /* The COLUMN needs the same defence the rows already had.
+
+         Without it the implicit column is `auto`, whose minimum is the largest
+         item's min-content width -- and the rail's min-content grows with the
+         number of beats (`cells x min-width + (cells-1) x gap`, and gaps do not
+         shrink).  Measured in the desktop shell with a 20 s lead: the column
+         became 614 px, EVERY child inherited it, and the card stayed 439 px and
+         cropped them -- the GO button and every right-aligned metric value.  It
+         looked like a styling choice, not a bug.
+
+         `fitRail()` is what actually fixes that case (it caps the rail's
+         min-content).  This line is the structural half: a grid item must not be
+         able to dictate the container's width, whatever someone adds here next
+         (a long unbroken run id, a long instruction string).  Measured: with
+         either one alone the shell renders correctly, which is exactly why both
+         are here. */
+      grid-template-columns:minmax(0,1fr);
       grid-template-rows:auto auto auto minmax(0,1fr) auto auto;
       padding:clamp(11px,2.4vmin,20px) clamp(14px,3.4vmin,28px) clamp(12px,2.6vmin,22px);
       gap:clamp(6px,1.4vmin,13px);position:relative;z-index:1}
 
+    /* ------------------------------------------------------------- the head */
     .head{display:flex;align-items:center;justify-content:space-between;gap:10px;min-width:0}
-    .state{display:flex;align-items:center;gap:8px;font-size:11px;letter-spacing:.13em;
+    .state{display:flex;align-items:center;gap:8px;font-size:11px;letter-spacing:.12em;
       text-transform:uppercase;color:var(--dim2);white-space:nowrap;overflow:hidden;
       text-overflow:ellipsis;font-weight:500}
+    /* The dot is not decoration: green means the panel is live and listening.
+       It only pulses while a cue is actually running. */
     .dot{width:7px;height:7px;border-radius:50%;background:var(--dim2);flex:none;
-      transition:background var(--dur),box-shadow var(--dur)}
-    .dot.live{background:var(--ok);box-shadow:0 0 0 4px rgba(34,197,94,.16)}
-    @keyframes pulse{50%{opacity:.4}}
+      transition:background var(--dur) var(--ease)}
+    .dot.live{background:var(--ok)}
+    @keyframes pulse{50%{opacity:.35}}
     .dot.live{animation:pulse 1.9s var(--ease) infinite}
-    .runid{font:11px/1 "JetBrains Mono","Cascadia Code","Fira Code",ui-monospace,SFMono-Regular,Consolas,"Noto Sans SC",monospace;color:var(--dim2);
+    .runid{font:11px/1 var(--mono);color:var(--dim2);
       white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 
-    .instr{font-size:clamp(16px,2.7vmin,24px);font-weight:600;line-height:1.28;
-      letter-spacing:-.01em;overflow:hidden;text-overflow:ellipsis}
+    .instr{font-size:clamp(16px,2.7vmin,23px);font-weight:600;line-height:1.3;
+      letter-spacing:-.012em;overflow:hidden;text-overflow:ellipsis}
     .instr:empty{display:none}
-    .guide{font-size:clamp(11px,1.5vmin,13px);color:var(--dim2);line-height:1.45}
+    .guide{font-size:clamp(11px,1.5vmin,13px);color:var(--dim2);line-height:1.5}
     .guide:empty{display:none}
+    /* The panel is running in a browser tab because the native window could not
+       open.  Stated plainly rather than left for the user to notice, because
+       "it opened as a web page" is otherwise indistinguishable from "this is a
+       web app".  Uses --accent (amber), not --bad: nothing is broken, the
+       measurement is still valid, only the window affordances are missing. */
+    .alert{display:flex;align-items:flex-start;gap:8px;
+      font-size:clamp(11px,1.5vmin,12.5px);line-height:1.5;
+      color:var(--fg);background:var(--accent-dim);
+      border:1px solid var(--accent);border-radius:var(--r-sm);
+      padding:8px 10px}
+    .alert[hidden]{display:none}
+    .alert::before{content:"";flex:none;width:6px;height:6px;margin-top:.45em;
+      border-radius:50%;background:var(--accent)}
 
     /* ------------------------------------------------------------ the clock */
     .clockwrap{display:flex;flex-direction:column;align-items:center;justify-content:center;
       min-height:0;gap:clamp(3px,1vmin,10px)}
     #clock{
-      /* Inter (not a mono face) for the countdown: it matches the rest of the
-         UI and reads as a modern dashboard reading.  Still cannot jitter --
-         tabular figures make every digit the same width. */
       font:600 clamp(56px,24vmin,190px)/0.95 "Inter","Noto Sans SC",system-ui,sans-serif;
       letter-spacing:-.05em;
       font-variant-numeric:tabular-nums;font-feature-settings:"tnum" 1,"cv01" 1;
       color:var(--fg);
-      transition:color .12s var(--ease),text-shadow .12s var(--ease)}
-    #clock.go{color:var(--go);text-shadow:0 0 0.5em rgba(251,191,36,.55)}
-    #clock.tail{color:var(--dim2);font-size:clamp(32px,12vmin,96px)}
+      transition:color .12s var(--ease)}
+    #clock.go{color:var(--accent)}
+    /* Tail (time since GO) is a secondary reading: the action is already over,
+       so it must not compete with the countdown it just replaced.  It was
+       clamp(32,12vmin,96) -- 55px at 460 wide, i.e. larger than the 4-character
+       "+7.9" needs, which pulled the eye away from the meter where the actual
+       verdict appears. */
+    #clock.tail{color:var(--dim2);font-size:clamp(26px,9vmin,72px)}
     #clock.ready{color:var(--dim);font-size:clamp(32px,13vmin,100px);font-weight:500}
+    /* Idle: there is no reading to show.  A 190px "--" renders as two fat
+       bars and reads as a broken/loading skeleton, so the placeholder drops
+       to a quiet size and lets the line beneath it do the explaining. */
+    body.idle #clock{font-size:clamp(26px,8vmin,54px);font-weight:500;
+      letter-spacing:0;color:var(--dim2)}
     .phase{font-size:clamp(11px,1.55vmin,13.5px);color:var(--dim2);
       font-variant-numeric:tabular-nums;letter-spacing:.02em;white-space:nowrap}
+    /* GO is the only moment the phase line is allowed to shout. */
+    .phase.go{color:var(--accent);font-weight:600}
+    /* Idle-only.  Hidden the moment a cue exists, so it never competes with
+       the countdown or the phase line. */
+    .hint{font-size:clamp(11px,1.5vmin,13px);color:var(--dim2);
+      text-align:center;max-width:34ch;line-height:1.5}
+    body:not(.idle) .hint{display:none}
 
     /* --------------------------------------------------------------- beats */
+    /* The rail IS the instrument: one cell per beat, the GO cell accented,
+       the elapsed cells filled.  Height is the only thing that moves, so it
+       stays readable at a glance from across a bench. */
+    /* GO is pinned to the CENTRE of the rail.  The grid is a timeline, so with
+       uneven lead/tail the target drifts off-centre (measured: 28.6px, ~0.87
+       cell, at lead 7 / tail 5).  For an instrument that is wrong for two
+       reasons: the operator has to re-find the target every run instead of
+       catching it in peripheral vision, and a near-miss looks like a layout
+       bug.  buildGrid() pads the short side with invisible spacers so the GO
+       cell always lands mid-rail. */
     #grid{display:flex;align-items:center;justify-content:center;
-      gap:clamp(4px,1vmin,9px);height:clamp(28px,6.6vmin,54px);flex:none;
-      padding:0 2px}
-    .cell{flex:1 1 0;min-width:3px;max-width:24px;height:24%;border-radius:99px;
-      background:rgba(148,163,184,.22);
-      transition:background .08s linear,height .08s linear,box-shadow .08s linear}
-    .cell.past{background:rgba(148,163,184,.42)}
-    .cell.now{background:var(--accent);height:74%;
-      box-shadow:0 0 14px rgba(96,165,250,.75)}
-    .cell.go{background:var(--go);height:100%;
-      box-shadow:0 0 20px rgba(251,191,36,.85)}
+      gap:var(--rail-gap,clamp(4px,1vmin,9px));height:clamp(28px,6.6vmin,54px);flex:none;
+      padding:0 2px;min-width:0}
+    /* min-width is driven by fitRail(): one cell per beat means the rail's
+       natural width grows without bound, so it is computed to fit the card
+       rather than allowed to overflow it.  See fitRail() for why. */
+    .cell{flex:1 1 0;min-width:var(--cell-min,3px);max-width:24px;height:24%;border-radius:var(--r-pill);
+      background:var(--well);
+      transition:background .08s linear,height .08s linear}
+    /* Invisible, same flex maths as a beat: it only exists to balance the rail
+       so the GO cell sits at the centre.  It carries no data-idx, and tick()
+       skips it, so it can never be mistaken for a beat. */
+    .spacer{flex:1 1 0;min-width:var(--cell-min,3px);max-width:24px;height:0}
+    /* The GO beat is a POSITION, not only an event: it has to be findable for
+       the whole countdown, otherwise the operator learns where the target was
+       only after it has gone.  Before GO it reads as an outlined target;
+       once it fires it fills solid. */
+    .cell.accent{background:var(--accent-dim);height:52%;
+      box-shadow:inset 0 0 0 1px var(--accent)}
+    .cell.past{background:rgba(255,255,255,.26)}
+    .cell.now{background:var(--fg);height:74%}
+    /* Tail beats (after GO) only sustain the pulse, so they are held back and
+       must not compete with the moment.  tick() added this class from the
+       start but no rule ever styled it. */
+    .cell.tail{height:18%;background:transparent;
+      box-shadow:inset 0 0 0 1px var(--line)}
+    .cell.accent.past,.cell.accent.now{background:var(--accent);height:100%;
+      box-shadow:none}
+    .cell.tail.now{height:52%;background:var(--dim2)}
 
     /* ------------------------------------------------------------- actions */
     .actions{display:grid;gap:clamp(7px,1.5vmin,12px)}
+    /* The primary control.  Rest = neutral raised surface, accent = GO,
+       green = the press registered.  Its contrast is checked in all three. */
     #press{
-      width:100%;border:1px solid var(--line2);border-radius:var(--r-md);
+      width:100%;border:1px solid var(--line);border-radius:var(--r);
       padding:clamp(12px,3.2vmin,26px) 16px;
       font-size:clamp(15px,2.8vmin,25px);font-weight:600;letter-spacing:.02em;
-      color:var(--fg);background:var(--card-hi);box-shadow:var(--shadow-sm);
+      color:var(--fg);background:var(--raised);
+      /* colour is deliberately NOT transitioned: the instant the button turns
+         GO-amber or press-green is exactly when its label must be readable,
+         and a 160ms cross-fade leaves it mid-grey over the new fill.  The
+         surface fades, the text snaps. */
       transition:transform var(--dur) var(--ease),background var(--dur) var(--ease),
-                 color var(--dur) var(--ease),box-shadow var(--dur) var(--ease),
                  border-color var(--dur) var(--ease)}
-    #press:hover:not(:disabled){background:rgba(71,85,105,.72);border-color:var(--line2);
+    #press:hover:not(:disabled){background:rgba(255,255,255,.12);border-color:var(--line-2);
       transform:translateY(-1px)}
     #press:active:not(:disabled){transform:translateY(0) scale(.995)}
-    #press.beat{background:rgba(96,165,250,.22);border-color:rgba(96,165,250,.5)}
-    #press.go{background:linear-gradient(180deg,#fcd34d,#f59e0b);color:var(--go-ink);
-      border-color:#fde68a;box-shadow:0 0 34px rgba(251,191,36,.5),var(--shadow-sm)}
-    #press.hit{background:linear-gradient(180deg,#4ade80,#16a34a);color:#052e16;
-      border-color:#86efac;box-shadow:0 0 28px rgba(34,197,94,.5)}
-    #press:disabled{opacity:.45;box-shadow:none;transform:none;cursor:not-allowed}
+    #press.beat{border-color:var(--line-2)}
+    #press.go{background:var(--accent);color:var(--accent-ink);
+      border-color:var(--accent)}
+    #press.hit{background:var(--ok);color:#04220f;border-color:var(--ok)}
+    #press:disabled{opacity:.42;transform:none;cursor:not-allowed}
+    /* A registered press is ALSO disabled (the cue is over).  The blanket
+       :disabled opacity must not dim it: "your press landed" is the one
+       reading the operator must be able to see at a glance, and at 42% it
+       washed out to pale green with near-invisible text. */
+    #press.hit:disabled{opacity:1}
 
     .row{display:flex;gap:clamp(7px,1.5vmin,10px)}
     .ghost{flex:1;padding:clamp(8px,1.6vmin,12px);border-radius:var(--r-sm);
@@ -211,9 +334,14 @@
       background:transparent;border:1px solid var(--line);
       transition:background var(--dur) var(--ease),color var(--dur) var(--ease),
                  border-color var(--dur) var(--ease)}
-    .ghost:hover{background:var(--card-hi);color:var(--fg);border-color:var(--line2)}
+    .ghost:hover{background:var(--raised);color:var(--fg);border-color:var(--line-2)}
+    .ghost:active{transform:scale(.99)}
 
     /* --------------------------------------------------------------- meter */
+    /* Telemetry, not content.  It is deliberately the quietest block on the
+       surface: mono numerals, no boxes, one hairline to separate it from the
+       controls.  The operator reads it once to confirm alignment, then
+       ignores it. */
     .meter{border-top:1px solid var(--line);padding-top:clamp(7px,1.3vmin,12px);
       display:grid;gap:clamp(2px,.6vmin,5px);
       font-size:clamp(10.5px,1.4vmin,12.5px)}
@@ -222,9 +350,13 @@
     .m span{flex:1 1 auto;min-width:0;overflow:hidden;text-overflow:ellipsis;
       white-space:nowrap}
     .m b{flex:0 1 auto;min-width:0;color:var(--dim);font-weight:500;
-      font-family:"JetBrains Mono","Cascadia Code","Fira Code",ui-monospace,SFMono-Regular,Consolas,"Noto Sans SC",monospace;white-space:nowrap;
-      overflow:hidden;text-overflow:ellipsis;text-align:right}
-    .ok{color:var(--ok)!important} .bad{color:var(--warn)!important}
+      font-family:var(--mono);white-space:nowrap;
+      overflow:hidden;text-overflow:ellipsis;text-align:right;
+      font-variant-numeric:tabular-nums}
+    /* .ok / .bad are applied by the timing core.  Declared here so the two
+       names the JS already uses actually exist. */
+    .ok,.good{color:var(--ok)!important}
+    .bad{color:var(--bad)!important}
 
     /* ------------------------------------------------------------ settings */
     #settings{display:none;flex:1 1 auto;min-height:0;position:relative;z-index:1}
@@ -236,27 +368,33 @@
       letter-spacing:-.01em}
     .grp{border-top:1px solid var(--line);padding:13px 0 5px}
     .grp:first-of-type{border-top:0;padding-top:0}
+    /* Section label in the settings sheet.  This is the ONLY place the panel
+       uses a small-caps micro-label, because a settings sheet genuinely has
+       groups that need naming.  It is not used above the headline. */
     .grp h3{font-size:10.5px;letter-spacing:.14em;text-transform:uppercase;
       color:var(--dim2);margin-bottom:11px;font-weight:600}
     .f{display:flex;align-items:center;gap:12px;margin-bottom:10px;
       font-size:clamp(11.5px,1.5vmin,13.5px)}
     .f label{flex:1;color:var(--dim)}
-    .f .v{min-width:54px;text-align:right;font-family:"JetBrains Mono","Cascadia Code","Fira Code",ui-monospace,SFMono-Regular,Consolas,"Noto Sans SC",monospace;
-      font-size:.92em;color:var(--dim2)}
+    .f .v{min-width:54px;text-align:right;font-family:var(--mono);
+      font-size:.92em;color:var(--dim2);font-variant-numeric:tabular-nums}
 
-    /* range inputs, restyled so they match the glass surfaces */
+    /* form controls: label above, value beside.  Every one of them is
+       legible against the sheet surface in all three themes. */
     input[type=range]{width:clamp(84px,17vmin,150px);accent-color:var(--accent);
       background:transparent}
     input[type=number],input[type=text],select{
-      width:clamp(74px,14vmin,106px);background:var(--surface);color:var(--fg);
+      width:clamp(74px,14vmin,106px);background:var(--well);color:var(--fg);
       border:1px solid var(--line);border-radius:var(--r-sm);
-      padding:6px 9px;font-size:.95em;font-family:"JetBrains Mono","Cascadia Code","Fira Code",ui-monospace,SFMono-Regular,Consolas,"Noto Sans SC",monospace;
+      padding:6px 9px;font-size:.95em;font-family:var(--mono);
+      font-variant-numeric:tabular-nums;
       transition:border-color var(--dur) var(--ease),background var(--dur) var(--ease)}
-    input[type=number]:hover,select:hover{border-color:var(--line2)}
+    input[type=number]::placeholder,input[type=text]::placeholder{color:var(--dim2)}
+    input[type=number]:hover,select:hover{border-color:var(--line-2)}
     input[type=number]:focus,select:focus{outline:none;border-color:var(--accent);
-      box-shadow:0 0 0 3px rgba(96,165,250,.22)}
+      box-shadow:0 0 0 3px var(--accent-dim)}
     input[type=checkbox]{width:16px;height:16px;accent-color:var(--accent)}
-    .note{font-size:.88em;color:var(--dim2);margin:4px 0 9px;line-height:1.5}
+    .note{font-size:.88em;color:var(--dim2);margin:4px 0 9px;line-height:1.55}
     .sheet .row{margin-top:16px}
 
     .swatches{display:flex;gap:8px}
@@ -265,64 +403,68 @@
       color:var(--dim);
       transition:background var(--dur) var(--ease),color var(--dur) var(--ease),
                  border-color var(--dur) var(--ease)}
-    .sw:hover{background:var(--card-hi);color:var(--fg)}
+    .sw:hover{background:var(--raised);color:var(--fg)}
     .sw[aria-pressed=true]{border-color:var(--accent);color:var(--fg);
-      background:rgba(96,165,250,.16);box-shadow:0 0 0 3px rgba(96,165,250,.14)}
+      background:var(--accent-dim)}
 
     /* --------------------------------------------------------------- themes */
-    body.theme-light{--win-rgb:241,245,249;--win-alpha:1;
-      --bg:#f1f5f9;--bg2:#e8eef5;
-      --card:rgba(255,255,255,.72);--card-hi:rgba(226,232,240,.85);
-      --surface:rgba(255,255,255,.85);
-      --line:rgba(71,85,105,.18);--line2:rgba(71,85,105,.30);
-      --fg:#0f172a;--dim:#334155;--dim2:#526078;
-      --accent:#2563eb;--go:#b45309;--ok:#15803d;--warn:#dc2626;
-      --glass-edge:rgba(255,255,255,.75);
-      --shadow:0 18px 45px rgba(15,23,42,.16),0 2px 8px rgba(15,23,42,.10);
-      --shadow-sm:0 4px 14px rgba(15,23,42,.12)}
-    body.theme-light .cell{background:rgba(71,85,105,.22)}
-    body.theme-light .cell.past{background:rgba(71,85,105,.42)}
-    body.theme-light #clock.go{text-shadow:none}
+    /* One accent per theme, held constant across the whole panel.  Light and
+       amber are not "different websites" -- they are the same instrument
+       under different bench lighting, so the geometry and the accent
+       semantics never move. */
+    body.theme-light{--win-rgb:242,243,246;--win-alpha:1;
+      --bg:#f2f3f6;
+      --well:rgba(15,17,21,.045);--raised:rgba(15,17,21,.075);
+      --card:rgba(255,255,255,.76);--card-2:rgba(255,255,255,.9);
+      --line:rgba(15,17,21,.10);--line-2:rgba(15,17,21,.22);
+      --fg:#14161b;--dim:#4c5261;--dim2:#6c7382;
+      /* the accent darkens so it can carry dark ink; the HUE is identical
+         to dark mode, which is what makes "amber = act now" portable */
+      --accent:#b45309;--accent-ink:#fff8ec;--accent-dim:rgba(180,83,9,.14);
+      --ok:#15803d;--bad:#b91c1c;
+      --glass-edge:rgba(255,255,255,.8);
+      --shadow:0 22px 55px rgba(15,23,42,.16),0 2px 8px rgba(15,23,42,.10)}
+    body.theme-light .cell.past{background:rgba(15,17,21,.28)}
+    body.theme-light .cell.now{background:var(--fg)}
+    body.theme-light #press.hit{color:#fff}
 
-    body.theme-amber{--win-rgb:26,18,6;--win-alpha:1;
-      --bg:#1a1206;--bg2:#221708;
-      --card:rgba(45,32,14,.62);--card-hi:rgba(69,50,22,.66);
-      --surface:rgba(18,12,3,.72);
-      --line:rgba(184,148,77,.22);--line2:rgba(184,148,77,.38);
-      --fg:#ffd98a;--dim:#e0b96e;--dim2:#b8944d;
-      --accent:#fbbf24;--go:#fff3c4;--ok:#4ade80;--warn:#f87171;
-      --glass-edge:rgba(255,220,150,.14);
-      --shadow:0 18px 50px rgba(0,0,0,.6),0 2px 8px rgba(0,0,0,.4);
-      --shadow-sm:0 4px 14px rgba(0,0,0,.4)}
-    body.theme-amber .cell{background:rgba(184,148,77,.24)}
-    body.theme-amber .cell.past{background:rgba(184,148,77,.46)}
-
+    body.theme-amber{--win-rgb:20,14,4;--win-alpha:1;
+      --bg:#140e04;
+      --well:rgba(255,214,140,.055);--raised:rgba(255,214,140,.09);
+      --card:rgba(38,27,11,.66);--card-2:rgba(48,35,15,.76);
+      --line:rgba(255,214,140,.14);--line-2:rgba(255,214,140,.28);
+      --fg:#ffdda1;--dim:#d9b478;--dim2:#a98c58;
+      --accent:#ffc247;--accent-ink:#251803;--accent-dim:rgba(255,194,71,.16);
+      --ok:#4ade80;--bad:#f87171;
+      --glass-edge:rgba(255,220,150,.12);
+      --shadow:0 22px 60px rgba(0,0,0,.62),0 2px 8px rgba(0,0,0,.42)}
+    body.theme-amber .cell.past{background:rgba(255,214,140,.28)}
 
     /* ------------------------------------------------------------ scrollbars */
     /* The default Windows scrollbar is a dated grey slab and the single most
-       "unstyled" looking element in the settings sheet.  A slim themed bar keeps
-       the glass look intact. */
-    *{scrollbar-width:thin;scrollbar-color:rgba(148,163,184,.35) transparent}
+       "unstyled" looking element in the settings sheet.  A slim themed bar
+       keeps the glass look intact. */
+    *{scrollbar-width:thin;scrollbar-color:rgba(255,255,255,.22) transparent}
     ::-webkit-scrollbar{width:10px;height:10px}
     ::-webkit-scrollbar-track{background:transparent}
-    ::-webkit-scrollbar-thumb{background:rgba(148,163,184,.30);border-radius:99px;
+    ::-webkit-scrollbar-thumb{background:rgba(255,255,255,.20);border-radius:var(--r-pill);
       border:3px solid transparent;background-clip:content-box}
-    ::-webkit-scrollbar-thumb:hover{background:rgba(148,163,184,.55);
+    ::-webkit-scrollbar-thumb:hover{background:rgba(255,255,255,.34);
       background-clip:content-box}
     ::-webkit-scrollbar-corner{background:transparent}
-    body.theme-light{scrollbar-color:rgba(71,85,105,.35) transparent}
-    body.theme-light ::-webkit-scrollbar-thumb{background:rgba(71,85,105,.30);
+    body.theme-light{scrollbar-color:rgba(15,17,21,.24) transparent}
+    body.theme-light ::-webkit-scrollbar-thumb{background:rgba(15,17,21,.22);
       background-clip:content-box}
-    body.theme-light ::-webkit-scrollbar-thumb:hover{background:rgba(71,85,105,.5);
+    body.theme-light ::-webkit-scrollbar-thumb:hover{background:rgba(15,17,21,.4);
       background-clip:content-box}
 
-    /* The title bar and the card must read as ONE rounded surface: the bar sits
-       inside the card's rounded top, sharing its radius, rather than being a
-       separate rectangle above it. */
+    /* The title bar and the card must read as ONE rounded surface: the bar
+       sits inside the card's rounded top, sharing its radius, rather than
+       being a separate rectangle above it. */
     body.shell .stage{flex-direction:column}
     body.shell #titlebar{
-      flex:none;margin:0;border-radius:var(--r-lg) var(--r-lg) 0 0;
-      background:linear-gradient(180deg,rgba(255,255,255,.06),rgba(255,255,255,0))}
+      flex:none;margin:0;border-radius:var(--r) var(--r) 0 0;
+      background:linear-gradient(180deg,rgba(255,255,255,.05),rgba(255,255,255,0))}
 
     /* ---------------------------------------------------------- resize grips */
     .grip{position:fixed;z-index:60}
@@ -337,7 +479,7 @@
     body:not(.shell) .grip{display:none}
 </style>
 </head>
-<body>
+<body class="idle">
 
 <div id="titlebar">
   <div class="drag" id="drag"><span class="name" id="tb-name">chrono-handoff</span></div>
@@ -353,9 +495,20 @@
       <span class="state"><i class="dot" id="live"></i><span id="state">待机</span></span>
       <span class="runid" id="runid"></span>
     </div>
-    <div class="instr" id="instruction">等待提示</div>
+    <div class="instr" id="instruction">尚无提示</div>
     <div class="guide" id="guidance"></div>
-    <div class="clockwrap"><div id="clock">—</div><div class="phase" id="phase"></div></div>
+    <!-- Shown only when the native window could not open and the panel had to
+         fall back to a browser tab.  Without it the downgrade is invisible:
+         the page just looks like a web app. -->
+    <div class="alert" id="degraded" hidden></div>    <div class="clockwrap">
+      <div id="clock">--</div>
+      <!-- The idle state.  Without it the panel shows a lone em-dash where the
+           operator expects a number, which reads as "the clock is broken"
+           rather than "no cue has been sent yet".  The countdown text itself
+           carries the explanation; this only says where to look for one. -->
+      <div class="phase" id="phase"></div>
+      <div class="hint" id="hint">等待 agent 下发提示</div>
+    </div>
     <div id="grid"></div>
     <div class="actions">
       <button id="press" disabled>GO 时按下</button>
@@ -365,11 +518,11 @@
       </div>
     </div>
     <div class="meter">
-      <div class="m"><span>时钟偏移 · 客户端→服务端</span><b id="m-offset">—</b></div>
-      <div class="m"><span>往返延迟</span><b id="m-rtt">—</b></div>
-      <div class="m"><span>音频调度</span><b id="m-audio">—</b></div>
-      <div class="m"><span>你的按压 vs GO</span><b id="m-result">—</b></div>
-      <div class="m"><span>栅格</span><b id="m-beats">—</b></div>
+      <div class="m"><span>时钟偏移 · 客户端→服务端</span><b id="m-offset">--</b></div>
+      <div class="m"><span>往返延迟</span><b id="m-rtt">--</b></div>
+      <div class="m"><span>音频调度</span><b id="m-audio">--</b></div>
+      <div class="m"><span>你的按压 vs GO</span><b id="m-result">--</b></div>
+      <div class="m"><span>栅格</span><b id="m-beats">--</b></div>
     </div>
   </div>
 
@@ -382,7 +535,7 @@
         <div class="f"><label>拍距</label><input type="range" id="s-ioi" min="150" max="1500" step="10"><span class="v" id="v-ioi"></span></div>
         <div class="f"><label>GO 后继续拍数</label><input type="range" id="s-tail" min="0" max="16" step="1"><span class="v" id="v-tail"></span></div>
         <div class="f"><label>默认目标时刻（秒）</label><input type="number" id="s-target" min="1" max="600" step="0.5"></div>
-        <div class="note">倒计时长度决定 GO 之前播几拍（实际拍数 = 倒计时 ÷ 拍距）。拍距约 500ms 时人最容易跟拍。GO 之后继续播是为了让人锁定脉动，而不是等它出现再反应——别调成 0。</div>
+        <div class="note">倒计时长度决定 GO 之前播几拍（实际拍数 = 倒计时 ÷ 拍距）。拍距约 500ms 时人最容易跟拍。GO 之后继续播是为了让人锁定脉动，而不是等它出现再反应，别调成 0。</div>
       </div>
       <div class="grp">
         <h3>声音</h3>
@@ -409,7 +562,7 @@
       <div class="grp">
         <h3>校准</h3>
         <div class="f"><label>应用学习到的偏移</label><input type="checkbox" id="s-calo"></div>
-        <div class="note" id="cal-info">—</div>
+        <div class="note" id="cal-info">--</div>
       </div>
       <div class="row">
         <button class="ghost" id="s-save">保存</button>
@@ -430,12 +583,26 @@
 const $ = (id) => document.getElementById(id);
 const POLL_MS = 1500;
 
+/* ------------------------------------------------------ where the server is
+   Every request the page makes goes through apiURL(), so the conductor's
+   location is written down exactly once.
+
+   In browser mode the page is served *by* the conductor, so the base is empty
+   and the URL stays relative.  A shell that bundles the page (Tauri) has an
+   origin of its own instead, and the shell announces the conductor's base in
+   __CHRONO_API_BASE__; without this, /api/* would be requested from the bundle
+   and 404.  Fonts need no such treatment -- they ship inside the bundle.
+   See docs/shell-contract.md. */
+function apiURL(path) { return (window.__CHRONO_API_BASE__ || "") + path; }
+
 /* ------------------------------------------------------------------ state */
 const S = {
   offsetMs: null,        // server_wall − client_wall  (ms)
   bestRtt: Infinity,
   runId: null,
+  finished: null,        // run id whose outcome is decided but tail may still play
   sched: null,           // {beats:[{index, at_ms, accent,...}], ...}
+  panelObserved: true,   // is THIS panel the evidence source, or just a reminder
   zeroMs: null,          // client-clock epoch ms of the GO beat
   audioStart: null,      // AudioContext time of the GO beat
   ac: null,
@@ -455,7 +622,7 @@ async function syncClock(samples = 7) {
   for (let i = 0; i < samples; i++) {
     const t0 = performance.timeOrigin + performance.now();
     let r;
-    try { r = await (await fetch("/api/clock", { cache: "no-store" })).json(); }
+    try { r = await (await fetch(apiURL("/api/clock"), { cache: "no-store" })).json(); }
     catch { break; }
     const t1 = performance.timeOrigin + performance.now();
     const rtt = t1 - t0;
@@ -468,7 +635,11 @@ async function syncClock(samples = 7) {
     S.bestRtt = best.rtt;
     $("m-offset").textContent = fmtSigned(best.offset) + " ms";
     $("m-rtt").textContent = best.rtt.toFixed(1) + " ms";
-    $("m-offset").className = Math.abs(best.offset) < 100000 ? "good" : "";
+    // One rule for the whole telemetry strip: green = this check passed,
+    // red = it failed, neutral = not measured yet.  Applied identically to
+    // the clock-offset and audio rows so the strip can be scanned in one
+    // pass instead of read row by row.
+    $("m-offset").className = Math.abs(best.offset) < 1000 ? "good" : "bad";
   }
   return S.offsetMs;
 }
@@ -544,14 +715,128 @@ function scheduleCue() {
 }
 
 /* ------------------------------------------------------------------ grid */
+/* Make the rail fit the card.
+
+   The rail renders one cell per beat, so its natural width grows without bound
+   -- a 20 s lead at the 500 ms default is 47 beats, and the padding that keeps
+   GO centred doubles that.  Cells have min-width and the gap is a length that
+   does NOT shrink, so the rail's min-content width can far exceed the card:
+   81 cells wanted 611 px inside a ~390 px content box.
+
+   That used to be invisible as a rail problem, because the grid column grew to
+   the rail's min-content and dragged every sibling with it (`grid-template-
+   columns:minmax(0,1fr)` now stops that).  With the column capped, the rail is
+   the only thing left to fix, and it has to fit for real: a rail whose right
+   half is clipped loses the tail AND, worse, can push GO off screen -- and GO is
+   a POSITION the operator has to be able to find for the whole countdown.
+
+   So the gap is computed from the available width and the cell count, and if
+   even a 1 px gap does not fit, the cells themselves give way.  Only when that
+   still cannot fit (a plan in the hundreds of beats) is it reported, because
+   silently clipping an instrument is the one outcome that must not be quiet. */
+const RAIL = { minCell: 3, minGap: 1, maxGap: 9, floorCell: 1 };
+
+function fitRail() {
+  const g = $("grid");
+  const cells = g.children.length;
+  if (!cells) return;
+  const avail = g.clientWidth - 4;            // #grid has 2px padding each side
+  if (avail <= 0) return;                     // not laid out yet
+
+  // Skip work that cannot change anything.  This also makes the ResizeObserver
+  // below safe: fitRail only writes CSS custom properties, so the grid's own box
+  // should not move and the observer should not re-fire -- but "should not" is
+  // not a guarantee, and "no-op when nothing changed" makes a feedback loop
+  // impossible rather than merely unlikely.
+  if (g._fitW === avail && g._fitN === cells) return;
+  g._fitW = avail; g._fitN = cells;
+
+  let gap = RAIL.maxGap;
+  if (cells > 1) {
+    gap = Math.max(RAIL.minGap,
+                   Math.min(RAIL.maxGap, (avail - cells * RAIL.minCell) / (cells - 1)));
+  }
+  // If minGap still does not fit, the cells give way too.
+  const cell = Math.max(
+    RAIL.floorCell,
+    Math.min(RAIL.minCell, (avail - (cells - 1) * gap) / cells));
+
+  g.style.setProperty("--rail-gap", gap.toFixed(2) + "px");
+  g.style.setProperty("--cell-min", cell.toFixed(2) + "px");
+
+  const needed = cells * cell + (cells - 1) * gap;
+  if (needed > avail + 1) {
+    // Loud on purpose, and only when it actually happens.
+    try {
+      shellCall("page_note", "rail cannot fit: " + cells + " beats need "
+                + Math.round(needed) + "px but only " + Math.round(avail)
+                + "px is available; the rail is clipped");
+    } catch (_) {}
+    console.warn("rail overflow", { cells, needed, avail });
+  }
+}
+
 function buildGrid() {
   const g = $("grid"); g.innerHTML = "";
   if (!S.sched) return;
-  for (const b of S.sched.beats) {
+  const beats = S.sched.beats;
+  const go = beats.findIndex(b => b.accent);  // Balance the rail around the GO beat so the target always sits at the
+  // centre, whatever lead/tail the settings produce.  Defaults (6 lead, 6
+  // tail) are already symmetric; a 7/5 split is not, and the drift is what
+  // made the accent look "not centred".
+  const before = go < 0 ? 0 : go;
+  const after = go < 0 ? 0 : beats.length - 1 - go;
+  const padBefore = Math.max(0, after - before);
+  const padAfter = Math.max(0, before - after);
+  const spacer = () => {
+    const s = document.createElement("div");
+    s.className = "spacer";
+    return s;
+  };
+  for (let i = 0; i < padBefore; i++) g.appendChild(spacer());
+  for (const b of beats) {
     const d = document.createElement("div");
-    d.className = "cell" + (b.accent ? " go" : "") + (b.at_ms < (S.sched.zero_wall_ms || 0) && !b.accent && b.index > 0 ? " tail" : "");
+    d.className = "cell" + (b.accent ? " accent" : "");
     d.dataset.idx = b.index;
     g.appendChild(d);
+  }
+  for (let i = 0; i < padAfter; i++) g.appendChild(spacer());
+  fitRail();
+  // Measured on the next frame: fitRail() has only just written the custom
+  // properties, and reading layout in the same tick would report the old box.
+  requestAnimationFrame(guardClipping);
+}
+
+/* Never clip silently.
+
+   `.stage` has overflow:hidden for its rounded corners, which means any layout
+   mistake inside it shows up as content that is simply *missing* -- no
+   scrollbar, no error.
+
+   Honest note on what this can and cannot see: it compares the card's
+   scrollWidth/Height against its client size, and while that did report the
+   original break in the desktop shell (card 439 px, content 630 px), it did NOT
+   report the same break in pywebview (439/439 with cells visibly past the edge).
+   So it is a coarse guard, not the real one -- the measurement that catches a
+   rail overflow is where the CELLS land, which is what scripts/e2e_ui_layout.py
+   now asserts directly.  Kept because a genuinely taller card is a real failure
+   mode this does catch. */
+let _clipReported = "";
+function guardClipping() {
+  const st = document.querySelector(".stage");
+  if (!st) return;
+  const bad = [];
+  if (st.scrollWidth > st.clientWidth + 1)
+    bad.push("width " + st.scrollWidth + " > " + st.clientWidth);
+  if (st.scrollHeight > st.clientHeight + 1)
+    bad.push("height " + st.scrollHeight + " > " + st.clientHeight);
+  const msg = bad.join(", ");
+  if (msg && msg !== _clipReported) {
+    _clipReported = msg;
+    try { shellCall("page_note", "card is clipping its content: " + msg); } catch (_) {}
+    console.warn("card clipping", msg);
+  } else if (!msg) {
+    _clipReported = "";
   }
 }
 
@@ -564,21 +849,35 @@ function tick() {
   const first = toClient(beats[0].at_ms), zero = S.zeroMs;
   const last = toClient(beats[beats.length - 1].at_ms);
 
+  // A run's OUTCOME can be decided while its grid is still sounding the tail:
+  // run_end fires the moment the human signal lands, but the pulse deliberately
+  // plays on (that is what keeps the operator entrained instead of reacting to
+  // a one-off event).  So tear the display down only after the last beat has
+  // actually passed.  Doing it on run_end blanked the rail while the audio kept
+  // beeping at nothing, and the next frame repainted a stale "+2.7" over the
+  // idle copy, so both states showed at once.
+  if (S.finished === S.runId && now > last + 400) { goIdle(); return; }
+
   // which beat are we nearest to / just after
   let idx = -1;
   for (let i = 0; i < beats.length; i++) { if (toClient(beats[i].at_ms) <= now) idx = i; }
   const next = beats[idx + 1] || null;
-  const nextMs = next ? toClient(next.at_ms) : null;
 
-  const cls = ["cell"];
   for (const el of $("grid").children) {
+    // Balance spacers carry no beat index; they are pure layout.
+    if (el.dataset.idx === undefined) continue;
     const b = beats[+el.dataset.idx];
     const t = toClient(b.at_ms);
-    let c = "cell";
-    if (t <= now) c += b.accent ? " go" : " past";
-    if (next && b.index === next.index) c += " now";
-    el.className = c;
-    if (toClient(b.at_ms) > zero) c += " tail";
+    const cls = ["cell"];
+    // The accent mark is what makes the target findable BEFORE it arrives.
+    if (b.accent) cls.push("accent");
+    // Tail beats (after GO) only sustain the pulse; hold them back.
+    if (t > zero) cls.push("tail");
+    if (t <= now) cls.push("past");
+    if (next && b.index === next.index) cls.push("now");
+    const nextCls = cls.join(" ");
+    // Only touch the DOM when it actually changed: this runs every frame.
+    if (el.className !== nextCls) el.className = nextCls;
   }
 
   /* Ordered by time.  The previous version tested `nextBeat > GO` to decide
@@ -607,23 +906,46 @@ function tick() {
           "距 GO " + left + " 拍 · " + ((-sinceZero) / 1000).toFixed(2) + " 秒");
   } else if (sinceZero <= 300) {
     paint("GO", "clock go", "就是现在");
+    phaseEl.classList.add("go");
   } else {
     paint("+" + (sinceZero / 1000).toFixed(1), "clock tail", "已过目标时刻");
   }
+  if (sinceZero > 300 || now < first) phaseEl.classList.remove("go");
 
   pulseButton(now);
 }
 
 
 /* ----------------------------------------------------------------- input */
+/* Back to "no cue".  The measured result stays in the meter row, so the panel
+   is not lying about what happened -- only the big reading goes back to "no
+   cue" instead of freezing on a stale tail number. */
+function goIdle() {
+  document.body.classList.add("idle");
+  $("clock").textContent = "--";
+  $("clock").className = "clock";
+  $("phase").textContent = "";
+  $("phase").classList.remove("go");
+  $("grid").innerHTML = "";
+  $("press").classList.remove("go", "beat", "hit");
+  $("press").hidden = false;
+  $("press").textContent = "GO 时按下";
+  $("press").disabled = true;
+  $("start").hidden = true;
+  // Clearing these is what stops tick() from repainting over the idle state.
+  S.sched = null;
+  S.zeroMs = null;
+}
+
 async function doPress(ev) {
-  if (S.pressed || !S.sched) return;
+  if (S.pressed || !S.sched || S.finished === S.runId) return;
+  if (!S.panelObserved) return;   // a sensor owns this run's evidence
   S.pressed = true;
   const clientMs = performance.timeOrigin + performance.now();   // click-handler time
   $("press").classList.add("hit");
   $("press").disabled = true;
   try {
-    const r = await (await fetch("/api/press", {
+    const r = await (await fetch(apiURL("/api/press"), {
       method: "POST", headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
         run_id: S.runId, payload: "space",
@@ -632,17 +954,22 @@ async function doPress(ev) {
     })).json();
     if (r.ok && typeof r.offset_ms === "number") {
       const v = r.offset_ms;
-      $("m-result").textContent = fmtSigned(v) + " ms (" + (v < 0 ? "early" : "late") + ")";
+      $("m-result").textContent = fmtSigned(v) + " ms (" + (v < 0 ? "提前" : "滞后") + ")";
       $("m-result").className = Math.abs(v) < 80 ? "good" : "";
+      $("press").textContent = "已记录";
     } else {
-      $("m-result").textContent = r.error || "not counted";
+      $("m-result").textContent = r.error || "未记录";
       $("m-result").className = "bad";
+      $("press").textContent = "未记录";
     }
   } catch (e) {
-    $("m-result").textContent = "send failed";
+    $("m-result").textContent = "发送失败";
     $("m-result").className = "bad";
   }
-  setTimeout(() => { S.pressed = false; $("press").classList.remove("hit"); }, 700);
+  // The green confirmation STAYS until the next cue.  It used to clear after
+  // 700ms, which left the operator wondering whether the press registered at
+  // all -- the one question the button exists to answer.
+  setTimeout(() => { S.pressed = false; }, 700);
 }
 
 /* ------------------------------------------------------------------- cue */
@@ -653,29 +980,57 @@ async function applySchedule(sched) {
   S.pressed = false;
   S.lastSeq = 0;
   S.schedFor = null;          // a genuinely new cue -> schedule it for real
+  S.finished = null;          // a new cue clears the "tail is over" latch
+  pulseButton._i = -1;        // beat index is per-run; stale value muting beat 0
+  clearTimeout(pulseButton._t);
 
-  $("runid").textContent = sched.run_id || "—";
+  $("runid").textContent = sched.run_id || "--";
   $("instruction").textContent = sched.instruction || "Act now";
+  document.body.classList.remove("idle");
   $("state").textContent = "提示已就绪";
   $("live").classList.add("live");
-  $("press").disabled = false;
-  $("press").textContent = "GO 时按下";
-  $("m-result").textContent = "—";
+
+  // The reminder and the evidence are two different things.  This panel is the
+  // observation surface only when the run says so; when a real sensor owns the
+  // evidence (a serial prompt, a console key), the operator's job is the
+  // physical action in the instruction -- pressing THIS button would not count
+  // and must not be presented as if it would.
+  const observedBy = (sched.expect_source || "none").split(":")[0];
+  const panelObserved = ["", "none", "http", "inject"].includes(observedBy);
+  S.panelObserved = panelObserved;
+
+  $("press").disabled = !panelObserved;
+  $("press").textContent = panelObserved ? "GO 时按下" : "按上面说的做";
+  $("press").classList.remove("hit", "go", "beat");
+  $("press").hidden = !panelObserved;
+  // The manual-start affordance belongs to the armed state only.  Leaving it
+  // up once the cue is running shows the operator a control that would do
+  // nothing (the run is already going).
+  $("start").hidden = true;
+  $("m-result").textContent = "--";
   $("m-result").className = "";
   $("m-beats").textContent = `${sched.beats.length} beats · ioi ${sched.ioi_ms} ms`
     + (sched.target_wall_ms ? ` · GO at ${new Date(sched.target_wall_ms).toLocaleTimeString()}` : "");
   buildGrid();
   const n = scheduleCue();
-  $("guidance").textContent = sched.audio
-    ? "听脉冲，重拍就是 GO，踩在它上面按下。"
-    : "看栅格，重拍就是 GO，踩在它上面按下。";
+  if (panelObserved) {
+    $("guidance").textContent = sched.audio
+      ? "听脉冲，重拍就是 GO，踩在它上面按下。"
+      : "看栅格，重拍就是 GO，踩在它上面按下。";
+  } else {
+    // Name the channel the agent is actually watching, so the human knows the
+    // machine is watching the hardware and not asking to be clicked.
+    $("guidance").textContent = sched.audio
+      ? `听脉冲，重拍就是 GO。在那一刻完成上面的动作，机器会在 ${observedBy} 上确认。`
+      : `看栅格，重拍就是 GO。在那一刻完成上面的动作，机器会在 ${observedBy} 上确认。`;
+  }
   if (n === 0) {
-    $("guidance").textContent = "栅格在页面就绪前就播完了 —— 仍可按下来记录时刻。";
+    $("guidance").textContent = "栅格在页面就绪前就播完了，仍可按下来记录时刻。";
   }
 }
 
 function pollEvents() {
-  fetch(`/api/events?since=${S.lastSeq}`, { cache: "no-store" }).then(r => r.json()).then(d => {
+  fetch(apiURL(`/api/events?since=${S.lastSeq}`), { cache: "no-store" }).then(r => r.json()).then(d => {
     if (!d.events || !d.events.length) return;
     S.lastSeq = d.events[d.events.length - 1].seq;
     for (const e of d.events) {
@@ -683,6 +1038,8 @@ function pollEvents() {
         $("state").textContent = "已结束 · " + (e.detail.status || "?");
         $("live").classList.remove("live");
         $("press").disabled = true;
+        // Mark it finished, but let tick() decide when the tail is over.
+        S.finished = S.runId;
       }
     }
   }).catch(() => {});
@@ -691,26 +1048,29 @@ function pollEvents() {
 /* Long-poll for the next armed cue: the page must react the instant a cue is
    armed, including when it was opened long before it was needed.            */
 function waitArmed() {
-  fetch("/api/wait-armed?timeout=25&since=" + (S.generation || 0), { cache: "no-store" })
+  fetch(apiURL("/api/wait-armed?timeout=25&since=" + (S.generation || 0)), { cache: "no-store" })
     .then(r => r.json())
     .then(async d => {
       if (d && d.run_id) {
         if (typeof d.generation === "number") S.generation = d.generation;
-        if (d.run_id === S.runId && S.sched) {
-          // Already displaying this cue. Re-applying it would reset the press
-          // result the human is looking at and (before the guard above) double
-          // the audio. Keep polling for the *next* cue instead.
+        if (d.run_id === S.runId && (S.sched || S.finished === d.run_id)) {
+          // Already displaying this cue (or it has already run to completion).
+          // Re-applying it would reset the press result the human is looking
+          // at, replay the audio, and resurrect a finished cue's grid.
           return;
         }
-        const s = await (await fetch("/api/schedule?run_id=" + encodeURIComponent(d.run_id), { cache: "no-store" })).json();
-        if (s && s.beats && s.beats.length) { await applySchedule(s); pollEvents(); return; }
+        const s = await (await fetch(apiURL("/api/schedule?run_id=" + encodeURIComponent(d.run_id)), { cache: "no-store" })).json();
+        // Only a LIVE run is worth rendering.  A finished one still carries its
+        // beats, so rendering it blindly would bring a spent cue back to life.
+        if (s && s.beats && s.beats.length && s.status === "running") { await applySchedule(s); pollEvents(); return; }
         if (s && s.run_id && s.status === "pending") {
           // armed but not started yet -- show it and offer a manual start
           S.sched = null; S.runId = s.run_id;
+          document.body.classList.remove("idle");
           $("runid").textContent = s.run_id;
           $("instruction").textContent = s.instruction || "Cue ready";
           $("state").textContent = "已武装（未开始）";
-          $("guidance").textContent = "提示已武装，由 agent 决定何时开始 —— 也可现在按「立即开始」。";
+          $("guidance").textContent = "提示已武装，由 agent 决定何时开始。也可现在按「立即开始」。";
           $("start").hidden = false;
         }
       }
@@ -724,7 +1084,7 @@ $("press").addEventListener("pointerdown", doPress);
 $("resync").addEventListener("click", async () => { await syncClock(); if (S.sched) scheduleCue(); });
 $("start").addEventListener("click", async () => {
   $("start").hidden = true;
-  await fetch("/api/start", { method: "POST", headers: { "Content-Type": "application/json" }, body: "{}" });
+  await fetch(apiURL("/api/start"), { method: "POST", headers: { "Content-Type": "application/json" }, body: "{}" });
 });
 addEventListener("keydown", (e) => {
   if (e.code === "Space") { e.preventDefault(); doPress(e); }
@@ -735,7 +1095,7 @@ addEventListener("pointerdown", () => { if (S.ac && S.ac.state === "suspended") 
   requestAnimationFrame(tick);
   await syncClock();
   try {
-    const s = await (await fetch("/api/schedule", { cache: "no-store" })).json();
+    const s = await (await fetch(apiURL("/api/schedule"), { cache: "no-store" })).json();
     if (s && s.beats && s.beats.length && s.status === "running") await applySchedule(s);
   } catch {}
   waitArmed();
@@ -757,6 +1117,12 @@ addEventListener("pointerdown", () => { if (S.ac && S.ac.state === "suspended") 
 function pulseButton(now) {
   const btn = $("press");
   if (!btn || !S.sched || !S.sched.beats.length) return;
+  // When a sensor owns the evidence there is nothing to press, so there is
+  // nothing to pulse.
+  if (!S.panelObserved) return;
+  // The press already answered the question; a button that keeps flashing
+  // afterwards fights the one thing the operator still needs to read.
+  if (S.finished === S.runId) return;
   let idx = -1;
   for (let i = 0; i < S.sched.beats.length; i++) {
     if (toClient(S.sched.beats[i].at_ms) <= now) idx = i; else break;
@@ -767,34 +1133,97 @@ function pulseButton(now) {
   btn.classList.toggle("go", !!b.accent);
   btn.classList.add("beat");
   clearTimeout(pulseButton._t);
+  // Scale the flash to the beat interval.  A fixed 90ms is fine at 500ms but
+  // at ioi 150ms consecutive flashes overlap and the button never rests.
+  const ioi = S.sched.ioi_ms || 500;
   pulseButton._t = setTimeout(() => {
     btn.classList.remove("beat");
     if (!b.accent) btn.classList.remove("go");
-  }, 90);
+  }, Math.max(60, Math.min(160, ioi * 0.28)));
 }
 
 
-/* ============================================================ desktop shell */
-/* Active only when hosted by the native window (?shell=desktop).  The bridge is
-   window.pywebview.api; every call is guarded so this same HTML still works as
-   a plain browser tab.                                                       */
-const SHELL = new URLSearchParams(location.search).get("shell") === "desktop";
-let CFG = null;
-/* NOTE: `$` comes from the timing core above.  Redeclaring it here is a
-   SyntaxError for the ENTIRE script -- the page still paints, so it looks like a
-   styling problem while every listener, the shell layout and the beat grid are
-   silently dead.  Do not reintroduce it. */
+/* ============================================================= shell seam */
+/* Active only when hosted by a native window (?shell=desktop).
 
-function bridgeAPI() { return (window.pywebview && window.pywebview.api) || null; }
-async function waitBridge(ms) {
+   This is the ONLY host-specific surface left in the page, and it exists for one
+   reason: window chrome -- minimise, close, maximise, drag, resize, always-on-top,
+   opacity, native theme -- is an operation on the OS window.  No HTTP route can
+   perform it, because the process serving the API does not own the window.
+   Everything else (settings, health, calibration, cue control) goes over
+   ``/api/*`` in webui.py; see docs/shell-contract.md.
+
+   Each host injects an object of async methods under its own global.  Add one
+   probe below and nothing else in this file changes:
+
+     pywebview       window.pywebview.api.<name>        (implemented)
+     Tauri           window.__TAURI__.window.<name>     (adapter TODO)
+     Qt/WebChannel   a registered object                (adapter TODO)
+*/
+const SHELL_BACKENDS = [
+  ["pywebview", () => (window.pywebview && window.pywebview.api) || null],
+  ["tauri", tauriShell],
+];
+
+/* Tauri exposes one `invoke(name, params)`; the seam wants named async methods,
+   so this maps the positional arguments the page passes onto the parameter
+   names the Rust commands declare.  Keep in step with TAURI_PARAMS' sibling:
+   desktop/src-tauri/src/lib.rs. */
+const TAURI_PARAMS = {
+  minimize: [], close: [], toggle_maximize: [], begin_drag: [], end_drag: [],
+  begin_resize: ["edge"], set_on_top: ["value"], set_opacity: ["value"],
+  apply_theme: ["theme"], update_drag: ["dx", "dy"], update_resize: ["dx", "dy"],
+  end_resize: [], page_note: ["text"],
+};
+
+function tauriShell() {
+  const t = window.__TAURI__;
+  if (!t || !t.core || typeof t.core.invoke !== "function") return null;
+  const api = {};
+  for (const [name, params] of Object.entries(TAURI_PARAMS))
+    api[name] = (...args) =>
+      t.core.invoke(name, Object.fromEntries(params.map((p, i) => [p, args[i]])));
+  return api;
+}
+
+function shellAPI() {
+  for (const [, probe] of SHELL_BACKENDS) { const a = probe(); if (a) return a; }
+  return null;
+}
+
+/*: Which host is actually serving the seam, or null in a plain browser tab.
+    Exposed for tests and for `chrono doctor` style diagnostics. */
+function shellBackend() {
+  for (const [name, probe] of SHELL_BACKENDS) if (probe()) return name;
+  return null;
+}
+
+async function waitShell(ms) {
   const t0 = performance.now();
   while (performance.now() - t0 < (ms || 3000)) {
-    const a = bridgeAPI();
+    const a = shellAPI();
     if (a) return a;
     await new Promise(r => setTimeout(r, 50));
   }
   return null;
 }
+
+/* Two ways to be a desktop shell: ask for it in the URL (the pywebview host and
+   `chrono panel` do), or have the shell declare it.  The second exists because a
+   shell that *bundles* this page owns its URL and cannot reliably attach a query
+   to it (Tauri serves it as a path, not a link).  Either way the authority on
+   whether window chrome exists is the seam probe below. */
+const SHELL = new URLSearchParams(location.search).get("shell") === "desktop"
+              || window.__CHRONO_SHELL__ === "desktop";
+/*: The seam, bound once by wireShell().  Declared here, with SHELL, so every
+    reference below is past its initialiser; a no-op until wireShell() runs, so
+    a browser tab (no port) stays safe. */
+let shellCall = async () => null;
+let CFG = null;
+/* NOTE: `$` comes from the timing core above.  Redeclaring it here is a
+   SyntaxError for the ENTIRE script -- the page still paints, so it looks like a
+   styling problem while every listener, the shell layout and the beat grid are
+   silently dead.  Do not reintroduce it. */
 
 const FIELDS = {
   "s-lead":["lead_s",parseFloat], "s-ioi":["ioi_ms",parseFloat], "s-tail":["tail_beats",parseInt],
@@ -806,7 +1235,15 @@ const FIELDS = {
   "s-calo":["apply_learned_offset",v=>v],
 };
 
-const WIN_RGB = { dark: "10,12,17", light: "245,247,251", amber: "21,15,4" };
+/* The window paint colour, mirrored from the CSS tokens.  applyTheme() writes
+   this onto <html> because the theme class lives on <body> and cannot reach
+   the root element -- the root paints the 1px gutter the acrylic shows
+   through.  Keep these in step with :root / .theme-light / .theme-amber. */
+const WIN_RGB = { dark: "11,13,17", light: "242,243,246", amber: "20,14,4" };
+
+//: Last degradation notice shown, so pollHealth does not rewrite the DOM every
+//: 5s with the same string.
+let healthDegraded = null;
 
 function applyTheme(t) {
   document.body.classList.remove("theme-light","theme-amber");
@@ -819,6 +1256,18 @@ function applyTheme(t) {
     el.setAttribute("aria-pressed", String(el.dataset.theme === (t || "dark")));
 }
 
+/* The card's alpha is *page* state, not window state.
+
+   It used to arrive only as a side effect of Python pushing a CSS variable into
+   the webview, so any host that does not own the window (Tauri) would ignore the
+   opacity setting entirely -- the slider would move and nothing would change.
+   The page applies it itself now; a host with a real native opacity API may
+   still do more.  Keep in step with --win-alpha in the stylesheet. */
+function applyOpacity(v) {
+  const a = Number.isFinite(v) ? v : 1;
+  document.documentElement.style.setProperty("--win-alpha", String(a));
+}
+
 function fillForm(cfg) {
   CFG = cfg || {};
   for (const [id,[key]] of Object.entries(FIELDS)) {
@@ -826,7 +1275,8 @@ function fillForm(cfg) {
     if (e.type === "checkbox") e.checked = !!CFG[key]; else e.value = CFG[key];
   }
   applyTheme(CFG.theme);
-  if (SHELL) bridgeCall("apply_theme", CFG.theme || "dark");
+  applyOpacity(CFG.opacity);
+  if (SHELL) shellCall("apply_theme", CFG.theme || "dark");
   updateLabels();
   refreshCal();
 }
@@ -853,23 +1303,26 @@ function collect() {
 
 async function refreshCal() {
   try {
-    const r = await (await fetch("/api/calibration",{cache:"no-store"})).json();
+    const r = await (await fetch(apiURL("/api/calibration"),{cache:"no-store"})).json();
     const items = r.items || [];
     $("cal-info").textContent = items.length
       ? "已学到 " + items.length + " 组：" + items.map(i =>
           `${i.key.split("|").pop()} ${i.offset_ms.toFixed(0)}ms (n=${i.n})`).join("；")
       : "尚无校准数据。跑完一次提示后才会出现。";
-  } catch { $("cal-info").textContent = "—"; }
+  } catch { $("cal-info").textContent = "--"; }
 }
 
 async function saveSettings() {
   const patch = collect();
-  const a = await waitBridge(1500);
-  if (a && a.save_settings) await a.save_settings(patch);
-  else await fetch("/api/settings",{method:"POST",headers:{"Content-Type":"application/json"},
-                                    body:JSON.stringify(patch)});
+  await fetch(apiURL("/api/settings"),{method:"POST",headers:{"Content-Type":"application/json"},
+                               body:JSON.stringify(patch)});
   CFG = Object.assign({}, CFG, patch);
   applyTheme(patch.theme);
+  // The native chrome (DWM backdrop, immersive-dark flag, window paint colour)
+  // is not CSS and is not a setting -- it is a live operation on the OS window,
+  // so it goes through the shell seam even though the value was just persisted
+  // over HTTP.  See docs/shell-contract.md.
+  shellCall("apply_theme", patch.theme || "dark");
   flash("已保存");
 }
 
@@ -891,13 +1344,28 @@ function setSettings(open) {
    that can never arrive.  Say it out loud.                                  */
 let healthOk = null;
 async function pollHealth() {
-  let ok = true;
-  try { ok = (await fetch("/api/health",{cache:"no-store"})).ok; } catch { ok = false; }
+  let ok = true, degraded = "";
+  try {
+    const r = await fetch(apiURL("/api/health"), { cache: "no-store" });
+    ok = r.ok;
+    if (ok) { try { degraded = ((await r.json()).degraded) || ""; } catch {} }
+  } catch { ok = false; }
+
+  // Announce a browser-tab downgrade.  The window is usually spawned detached,
+  // so the stderr warning goes to a log nobody reads and the operator is left
+  // thinking the project is simply a web app.
+  if (degraded !== healthDegraded) {
+    healthDegraded = degraded;
+    const a = $("degraded");
+    if (a) { a.textContent = degraded; a.hidden = !degraded; }
+    document.body.classList.toggle("degraded", !!degraded);
+  }
+
   if (ok === healthOk) return;
   healthOk = ok;
   const n = $("tb-name");
   if (n) {
-    n.textContent = ok ? "chrono-handoff" : "conductor 已失联 — 不会有提示";
+    n.textContent = ok ? "chrono-handoff" : "conductor 已失联，不会有提示";
     n.classList.toggle("bad", !ok);
   }
   const dot = $("live");
@@ -905,16 +1373,29 @@ async function pollHealth() {
 }
 
 /* ---------------------------------------------------------- window chrome */
-let bridgeCall = async () => null;
-
 function wireShell() {
   if (!SHELL) return;
   document.body.classList.add("shell");
 
   const call = async (name, ...args) => {
-    const a = await waitBridge(2000);
-    if (!a || typeof a[name] !== "function") return null;
-    try { return await a[name](...args); } catch { return null; }
+    const a = await waitShell(2000);
+    // No host at all is legitimate -- a plain browser tab has no seam.
+    if (!a) return null;
+    const note = (m) => {
+      console.error(m);
+      if (typeof a.page_note === "function") { try { a.page_note(m); } catch (_) {} }
+    };
+    // A host that is present but lacks the command is NOT nothing: it means the
+    // page and the host disagree, and returning null quietly made that look
+    // exactly like success.  It cost two debugging rounds while adding
+    // `page_note`, where the command existed in Rust but was missing from
+    // TAURI_PARAMS, so every call was silently dropped.
+    if (typeof a[name] !== "function") {
+      note("shellCall: the " + shellBackend() + " host has no command '" + name + "'");
+      return null;
+    }
+    try { return await a[name](...args); }
+    catch (e) { note("shellCall " + name + " failed: " + (e && e.message || e)); return null; }
   };
 
   $("tb-min").addEventListener("click", () => call("minimize"));
@@ -1013,7 +1494,7 @@ function wireShell() {
     e.addEventListener(ev, () => {
       updateLabels();
       if (id === "s-top") call("set_on_top", e.checked);
-      if (id === "s-opacity") call("set_opacity", parseFloat(e.value));
+      if (id === "s-opacity") { applyOpacity(parseFloat(e.value)); call("set_opacity", parseFloat(e.value)); }
     });
   }
   for (const sw of document.querySelectorAll(".sw"))
@@ -1024,9 +1505,8 @@ function wireShell() {
 
   $("s-save").addEventListener("click", saveSettings);
   $("s-reset").addEventListener("click", async () => {
-    const a = await waitBridge(1500);
-    if (a && a.reset_settings) fillForm(await a.reset_settings());
-    else fillForm((await (await fetch("/api/settings/reset",{method:"POST"})).json()).settings);
+    const r = await (await fetch(apiURL("/api/settings/reset"),{method:"POST"})).json();
+    fillForm(r.settings);
     flash("已恢复默认");
   });
   $("s-test").addEventListener("click", () => {
@@ -1038,11 +1518,166 @@ function wireShell() {
     tone(parseFloat($("s-accent-hz").value), parseFloat($("s-accent-ms").value)/1000, t0 + 2.0, vol);
   });
 
-  bridgeCall = call;
+  // Page errors must not be silent.  A throw inside the panel's script leaves a
+  // panel that looks merely idle, and there was nothing anywhere -- window, log,
+  // or otherwise -- to say what went wrong.  Reported through the shell when
+  // there is one; `console.error` still holds in a plain browser tab.
+  addEventListener("error", (e) => {
+    const where = (e.filename || "?") + ":" + (e.lineno || 0);
+    const msg = "JS error at " + where + ": " + (e.message || e.error || "?");
+    try { shellCall("page_note", msg); } catch (_) {}
+    console.error(msg);
+  });
+  addEventListener("unhandledrejection", (e) => {
+    const msg = "unhandled rejection: " + (e.reason && e.reason.message || e.reason);
+    try { shellCall("page_note", msg); } catch (_) {}
+    console.error(msg);
+  });
+
+  shellCall = call;
+
+  /* ----------------------------------------------------------------
+     Page-side test hook.
+
+     WHY THIS EXISTS.  Automation on this machine cannot click the page:
+     synthetic mouse input (mouse_event) drops pointermove, so a drag arrives
+     as pointerdown+pointerup with no motion, and a click lands on whatever is
+     coincidentally underneath.  Every pointer-driven behaviour -- the resize
+     grips, the title-bar drag, the GO button -- was therefore marked SKIP, and
+     "we never tested it" and "it works" looked the same in the report.
+
+     So the events are constructed here and dispatched at the real elements.
+     This is not a mock: the same listeners run, the same deltas are computed,
+     the same shellCall/fetch goes out.  The only thing removed is the OS -> 
+     Chromium input queue -- the one layer this machine cannot drive reliably.
+
+     Inert unless something calls it (`if (!el) throw` rather than guessing).
+     ---------------------------------------------------------------- */
+  const pt = (type, o, buttons) => new PointerEvent(type, {
+    bubbles: true, cancelable: true, isPrimary: true,
+    pointerId: o.pointerId, pointerType: "mouse", button: 0, buttons,
+    screenX: o.x, screenY: o.y, clientX: o.x, clientY: o.y,
+  });
+
+  window.__chronoPageTest = {
+    // Click a real element by id.  pointerdown is what the GO button listens
+    // for; click is what the title-bar buttons listen for.  Dispatch both, the
+    // way a real press produces both.
+    click(id) {
+      const el = document.getElementById(id);
+      if (!el) throw new Error("no #" + id);
+      const r = el.getBoundingClientRect();
+      const o = { pointerId: 11, x: r.left + r.width / 2, y: r.top + r.height / 2 };
+      el.dispatchEvent(pt("pointerdown", o, 1));
+      el.dispatchEvent(pt("pointerup", o, 0));
+      el.dispatchEvent(new MouseEvent("click", {
+        bubbles: true, cancelable: true, button: 0,
+        screenX: o.x, screenY: o.y, clientX: o.x, clientY: o.y,
+      }));
+      return { id, rect: [r.left, r.top, r.width, r.height], disabled: !!el.disabled };
+    },
+
+    // Drag a resize grip by (dx, dy).  Moves in two steps, like a hand.
+    dragGrip(edge, dx, dy) {
+      const g = document.querySelector('.grip[data-grip="' + edge + '"]');
+      if (!g) throw new Error("no grip " + edge);
+      const o = { pointerId: 12, x: 300, y: 300 };
+      g.dispatchEvent(pt("pointerdown", o, 1));
+      g.dispatchEvent(pt("pointermove", { ...o, x: o.x + dx / 2, y: o.y + dy / 2 }, 1));
+      g.dispatchEvent(pt("pointermove", { ...o, x: o.x + dx, y: o.y + dy }, 1));
+      g.dispatchEvent(pt("pointerup", { ...o, x: o.x + dx, y: o.y + dy }, 0));
+      return { edge, dx, dy };
+    },
+
+    // Drag the title bar by (dx, dy).  Its pointermove/up listeners are on
+    // document, so the events have to go there.
+    dragTitle(dx, dy) {
+      const d = document.getElementById("drag");
+      if (!d) throw new Error("no #drag");
+      const o = { pointerId: 13, x: 200, y: 20 };
+      d.dispatchEvent(pt("pointerdown", o, 1));
+      document.dispatchEvent(pt("pointermove", { ...o, x: o.x + dx, y: o.y + dy }, 1));
+      document.dispatchEvent(pt("pointerup", { ...o, x: o.x + dx, y: o.y + dy }, 0));
+      return { dx, dy };
+    },
+
+    // Press GO as soon as the page actually has a cue to press for.
+    //
+    // Polls the page's own state rather than being told when: `doPress` refuses
+    // to run unless the page holds a schedule and is the evidence source, so
+    // anything firing earlier would be rejected by the very guard under test.
+    // Resolves with what happened so a caller could log it; the real evidence
+    // is on the conductor (`signal_seen`), which is where a press has to land.
+    // Press GO, at the GO beat, once the page holds a live cue.
+    //
+    // Waits for `S.zeroMs` and presses *at* it rather than as soon as a schedule
+    // arrives.  That is not cosmetic: the conductor ignores a press that lands
+    // more than `min_offset_ms` (300 ms by default) before the cue's zero, since
+    // a press that early cannot be a human answering this cue -- it is far more
+    // likely a stray keystroke.  Pressing on arrival exercised nothing and got
+    // silently discarded, which is exactly what happened the first time.
+    //
+    // Resolves with what happened.  The evidence that matters is the conductor's
+    // (`signal_seen`), because that is where a press has to land.
+    pressWhenArmed(timeoutMs) {
+      const t0 = performance.now();
+      const nowMs = () => performance.timeOrigin + performance.now();
+      const note = (m) => { try { shellCall("page_note", "press: " + m); } catch (_) {} };
+      let ticks = 0;
+      return new Promise((resolve) => {
+        const tick = () => {
+          // Periodic, not only on the two outcomes: "it never fired and never
+          // timed out" is otherwise indistinguishable from "the hook is missing",
+          // and the state that explains it is only visible from in here.
+          if (ticks++ % 25 === 0) {
+            const dt = S.zeroMs ? Math.round(S.zeroMs - nowMs()) : null;
+            note("waiting sched=" + !!S.sched + " observed=" + !!S.panelObserved
+                 + " runId=" + S.runId + " msToZero=" + dt);
+          }
+          if (S.sched && S.panelObserved && !S.pressed && S.finished !== S.runId
+              && S.zeroMs !== null && nowMs() >= S.zeroMs) {
+            const clicked = window.__chronoPageTest.click("press");
+            note("clicked GO at zero+" + Math.round(nowMs() - S.zeroMs) + "ms");
+            resolve({ fired: true, clicked });
+          } else if (performance.now() - t0 > timeoutMs) {
+            const why = "timeout sched=" + !!S.sched + " observed=" + !!S.panelObserved
+                      + " pressed=" + S.pressed + " runId=" + S.runId;
+            note(why);
+            resolve({ fired: false, reason: why });
+          } else {
+            setTimeout(tick, 60);
+          }
+        };
+        tick();
+      });
+    },
+
+    // What the page currently believes -- lets a test assert the page reacted
+    // rather than only that the conductor did.
+    state() {
+      return {
+        runId: S.runId, sched: !!S.sched, pressed: !!S.pressed,
+        panelObserved: !!S.panelObserved, finished: S.finished,
+        pressText: $("press").textContent, pressDisabled: $("press").disabled,
+        result: $("m-result").textContent,
+      };
+    },
+  };
 
   addEventListener("keydown", (e) => {
     if (e.key === "Escape") { setSettings(false); e.stopPropagation(); }
   }, true);
+
+  // The rail's cell count does not change on resize, but the width it has to
+  // fit into does -- and dragging the SE grip is the normal way to use this
+  // widget, so this is a hot path, not an edge case.  Resizing smaller is
+  // exactly when a rail that fitted a moment ago starts overflowing.
+  addEventListener("resize", () => { fitRail(); guardClipping(); });
+  if (typeof ResizeObserver !== "undefined") {
+    // The window can be resized by the shell without a window resize event
+    // reaching the page in every host, so watch the grid's own box too.
+    new ResizeObserver(() => { fitRail(); guardClipping(); }).observe($("grid"));
+  }
 }
 
 /* audible preview shares the cue's synthesis path so it sounds the same */
@@ -1070,10 +1705,10 @@ window.addEventListener("error", (e) => {
 
 window.addEventListener("DOMContentLoaded", async () => {
   wireShell();
-  const a = await waitBridge(2500);
+  // Settings come over HTTP, not the shell seam: this page is served by the very
+  // process that owns them (see window.py CueWindow.url).
   let cfg = null;
-  if (a && a.get_settings) { try { cfg = await a.get_settings(); } catch {} }
-  if (!cfg) { try { cfg = (await (await fetch("/api/settings",{cache:"no-store"})).json()).settings; } catch {} }
+  try { cfg = (await (await fetch(apiURL("/api/settings"),{cache:"no-store"})).json()).settings; } catch {}
   fillForm(cfg || {});
 });
 

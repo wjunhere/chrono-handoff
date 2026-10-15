@@ -12,9 +12,10 @@ This also gives the right failure mode: if the UI process dies, cues still fire
 from __future__ import annotations
 
 import json
+import threading
 from typing import Any, Callable
 
-from .model import Event
+from .model import Event, RunStatus
 
 
 class RemoteConductor:
@@ -72,6 +73,31 @@ class RemoteConductor:
         """Allow the same run id to notify again (used after an explicit reset)."""
         self._last_seen = None
 
+    def watch_in_background(self, interval_s: float = 0.35) -> Callable[[], None]:
+        """Drive :meth:`poll_for_armed` on a thread; returns a stop function.
+
+        Both display hosts need exactly this loop -- the split-mode window and
+        ``chrono panel`` -- so it lives next to the method it drives rather than
+        being copied into each.  A copy is how ``chrono panel`` ended up with a
+        conductor stub whose ``on_armed`` could never fire: the page then never
+        learned that a cue had been armed, and waited forever.
+
+        Deliberately a daemon thread: a display client that outlives its own
+        process has nothing useful to do.
+        """
+        stop = threading.Event()
+
+        def loop() -> None:
+            while not stop.is_set():
+                try:
+                    self.poll_for_armed()
+                except Exception:
+                    pass
+                stop.wait(interval_s)
+
+        threading.Thread(target=loop, name="chrono-remote-watch", daemon=True).start()
+        return stop.set
+
     # -- panel surface ------------------------------------------------------
 
     def clock_sync_payload(self) -> dict[str, float]:
@@ -103,6 +129,20 @@ class RemoteConductor:
         if kw.get("wall_t") is not None:
             params["wall_t"] = kw["wall_t"]
         return self._c.call("press", **params)
+
+    def note_panel_press(self, run_id: str, wall_t: float | None = None) -> bool:
+        """Journal a panel click that is NOT this run's evidence.
+
+        CuePanel calls this whenever the run is observed by a real sensor
+        instead of the panel.  It belongs to the "surface CuePanel touches"
+        promised by the class docstring, but was missing -- so pressing the
+        button on a display panel (``chrono panel``, split mode) raised
+        AttributeError inside the HTTP handler: the click was neither recorded
+        nor counted, it just failed.  Distinct from inject() on purpose: this
+        path must never satisfy the run.
+        """
+        r = self._c.call("note_press", run_id=run_id, wall_t=wall_t)
+        return bool(r.get("ok", False))
 
     def go(self, run_id: str, in_s: float = 0.0) -> Any:
         return self._c.call("go", run_id=run_id, in_s=in_s)
@@ -152,13 +192,42 @@ class RemoteConductor:
         return
 
 
+class _PlanRef:
+    """The sliver of CuePlan a display client can read from a status snapshot.
+
+    Deliberately tiny: a remote panel needs to know *what the run is waiting
+    for* so it can decide whether a click is evidence, and nothing else.
+    """
+
+    def __init__(self, snapshot: dict[str, Any]) -> None:
+        self.meta: dict[str, Any] = snapshot.get("meta") or {}
+        self.expect = _ExpectRef(snapshot)
+
+
+class _ExpectRef:
+    def __init__(self, snapshot: dict[str, Any]) -> None:
+        self.source: str = snapshot.get("expect_source") or "none"
+
+
 class _RunRef:
-    """Minimal run object so shared code can read ``run.id`` / ``run.status``."""
+    """Minimal run object so shared code can read ``run.id`` / ``run.status`` / ``run.plan``.
+
+    ``status`` is a :class:`~chrono_handoff.model.RunStatus`, not the raw string
+    from the snapshot, and ``plan`` carries the expect source.  CuePanel reads
+    ``run.status.value`` and ``run.plan.expect.source``, so a display client that
+    exposed only strings raised AttributeError inside ``/api/press`` -- the
+    "panel cannot tell the difference" promise in RemoteConductor's docstring was
+    true only for the hosted conductor.
+    """
 
     def __init__(self, run_id: str, status: str, snapshot: dict[str, Any]) -> None:
         self.id = run_id
         self.run_id = run_id
-        self.status = status or snapshot.get("status", "")
+        raw = status or snapshot.get("status") or RunStatus.PENDING.value
+        # Fail fast on an unknown status rather than inventing one: a display
+        # client acting on a guess is worse than one that says it is confused.
+        self.status = RunStatus(raw)
+        self.plan = _PlanRef(snapshot)
         self._snap = snapshot
 
     def snapshot(self, include_events: bool = False) -> dict[str, Any]:

@@ -83,6 +83,30 @@ def main() -> int:
         except urllib.error.HTTPError as exc:
             check("missing font is a 404", exc.code == 404, f"HTTP {exc.code}")
 
+        # ---- 1c. the shell seam stays a seam ------------------------------
+        # panel.html must reach the host through exactly one probe.  The point of
+        # the seam is that swapping the host (pywebview -> Tauri / Qt) touches one
+        # array and nothing else; a second `window.pywebview` read, or a revived
+        # settings bridge, silently re-couples the page to one framework.
+        # docs/shell-contract.md states the contract these guard.
+        check("pywebview is reached from exactly one place",
+              html.count("window.pywebview &&") == 1,
+              f"{html.count('window.pywebview &&')} pywebview probe(s)")
+        check("the probe list covers every implemented host",
+              '["pywebview", ' in html and '["tauri", ' in html and "function shellBackend" in html)
+        check("settings are not on the seam",
+              not any(s in html for s in ("bridgeAPI", "waitBridge", "get_settings",
+                                          "save_settings", "reset_settings", "apply_window")),
+              "no stale bridge symbols")
+        # A bundled shell (Tauri) gives the page an origin of its own, so a
+        # relative /api/* would be asked of the bundle and 404.  Everything must
+        # go through apiURL(), which is the identity function when the conductor
+        # serves the page itself -- so the rule costs nothing in the browser case
+        # and is what keeps the two hosts from drifting apart.
+        bare = [pat for pat in ('fetch("/api/', "fetch(`/api/") if pat in html]
+        check("no bare /api fetch (all go through apiURL)",
+              not bare, f"bare: {bare}" if bare else "all requests via apiURL()")
+
         # ---- 2. health ---------------------------------------------------
         h = get(base + "/api/health")
         check("GET /api/health", h.get("ok") is True, f"current_run={h.get('current_run')}")
@@ -98,6 +122,7 @@ def main() -> int:
             server_at_t1 = c["server_recv_wall"] + rtt / 2
             if best is None or rtt < best[0]:
                 best = (rtt, server_at_t1 - t1)
+        assert best is not None, "no clock sample was taken"
         rtt_ms, offset = best[0] * 1000, best[1] * 1000
         check("clock sync converges", abs(offset) < 5.0, f"offset={offset:+.3f}ms rtt={rtt_ms:.3f}ms on loopback")
 

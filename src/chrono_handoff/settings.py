@@ -18,12 +18,23 @@ from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Any
 
+from .home import chrono_home
+
+#: The smallest window the shells will allow, in logical pixels.  Below this the
+#: countdown stops being readable at arm's length, which is where it has to be
+#: read.
+#:
+#: It lives here because three places have to agree on it and previously did not:
+#: the pywebview host was given a literal 380 while its own constant, the resize
+#: clamp and the Tauri shell all said 360, so the two shells disagreed about how
+#: short the window could get -- and this file's own clamp floored at 380x240,
+#: numbers matching no window at all.  A settings file could therefore claim a
+#: size the window would refuse to take.
+MIN_LOGIC_W, MIN_LOGIC_H = 320, 360
+
 
 def default_settings_path() -> Path:
-    env = os.environ.get("CHRONO_HOME")
-    base = Path(env) if env else Path.home() / ".chrono-handoff"
-    base.mkdir(parents=True, exist_ok=True)
-    return base / "settings.json"
+    return chrono_home() / "settings.json"
 
 
 @dataclass
@@ -139,8 +150,8 @@ class Settings:
         self.volume = min(1.0, max(0.0, self.volume))
         self.opacity = min(1.0, max(0.35, self.opacity))
         self.scale = min(2.5, max(0.6, self.scale))
-        self.width = int(min(1600, max(280, self.width)))
-        self.height = int(min(1400, max(240, self.height)))
+        self.width = int(min(1600, max(MIN_LOGIC_W, self.width)))
+        self.height = int(min(1400, max(MIN_LOGIC_H, self.height)))
         if self.theme not in ("dark", "light", "amber"):
             self.theme = "dark"
 

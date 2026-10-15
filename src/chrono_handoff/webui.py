@@ -35,14 +35,32 @@ import threading
 import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
-from typing import Any, Callable
+from typing import TYPE_CHECKING, Any, Callable
 
 from .conductor import Conductor
+
+if TYPE_CHECKING:  # remote.py imports model.py only, so this is not a cycle
+    from .remote import RemoteConductor
 from .model import CuePlan, RunStatus, SignalSpec
 
 PANEL_PATH = Path(__file__).with_name("statics") / "panel.html"
 FONTS_DIR = Path(__file__).with_name("statics") / "fonts"
+ICON_PATH = Path(__file__).with_name("statics") / "icon.svg"
 DEFAULT_PANEL_PORT = 8790
+
+#: Origins allowed to call this API cross-origin.  Exactly one caller needs it:
+#: the desktop shell (Tauri), which *bundles* the page instead of being served
+#: it, so the page's origin is the shell's, not ours.
+#:
+#: Deliberately a closed list rather than ``*``.  This server listens on
+#: 127.0.0.1 and driving a cue is a physical action, so widening it to every web
+#: page the operator happens to have open is not a trade worth making -- and the
+#: preflight below is what would let such a page read responses back.
+CORS_ORIGINS = frozenset({
+    "http://tauri.localhost",
+    "https://tauri.localhost",
+    "tauri://localhost",
+})
 
 
 class CuePanel:
@@ -56,7 +74,10 @@ class CuePanel:
 
     def __init__(
         self,
-        conductor: Conductor,
+        # A display client hands over a RemoteConductor, not a Conductor: same
+        # surface, but the clock lives in another process (see
+        # remote.RemoteConductor, which exists precisely to be this argument).
+        conductor: "Conductor | RemoteConductor",
         host: str = "127.0.0.1",
         port: int = DEFAULT_PANEL_PORT,
         auto_open: bool = False,
@@ -71,6 +92,9 @@ class CuePanel:
         self._thread: threading.Thread | None = None
         self._current_run: str | None = None
         self._prepared: str | None = None
+        #: Set when the panel had to fall back to a browser tab, so the page can
+        #: say so instead of silently looking like a web app.  Empty = native.
+        self.degraded_reason: str = ""
         self._lock = threading.Lock()
         self._subscribers: list[Callable[[str], None]] = []
         #: Monotonic counter of armed cues, so a client can ask for "anything
@@ -112,7 +136,11 @@ class CuePanel:
         class Handler(BaseHTTPRequestHandler):
             protocol_version = "HTTP/1.1"
 
-            def log_message(self, *_a: Any) -> None:
+            # Signature must match BaseHTTPRequestHandler.log_message(self,
+            # format, *args); a bare ``*_a`` override is not compatible with it.
+            # This panel is polled every few seconds, so the default per-request
+            # stderr spam would drown the operator's terminal.
+            def log_message(self, format: str, *args: Any) -> None:  # noqa: A002
                 return
 
             def handle_one_request(self) -> None:
@@ -137,12 +165,41 @@ class CuePanel:
                     pass
 
             # -- helpers --
+            def _cors(self) -> None:
+                """Echo the shell's origin back, but only for a known shell.
+
+                No header for anything else, which is what keeps an arbitrary
+                page in the operator's browser from reading this API.
+                """
+                origin = self.headers.get("Origin")
+                if origin and origin in CORS_ORIGINS:
+                    self.send_header("Access-Control-Allow-Origin", origin)
+                    self.send_header("Vary", "Origin")
+
+            def do_OPTIONS(self) -> None:  # noqa: N802
+                """CORS preflight.
+
+                A POST carrying ``Content-Type: application/json`` is not a
+                "simple" request, so a bundled shell's webview asks permission
+                first.  Without this, save/press/reset would fail *only* under
+                the shell -- the hardest place to notice, because the page still
+                loads and the browser-tab path still works.
+                """
+                self.send_response(204)
+                self._cors()
+                self.send_header("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
+                self.send_header("Access-Control-Allow-Headers", "Content-Type")
+                self.send_header("Access-Control-Max-Age", "600")
+                self.send_header("Content-Length", "0")
+                self.end_headers()
+
             def _json(self, obj: Any, status: int = 200) -> None:
                 body = json.dumps(obj, ensure_ascii=False, default=str).encode("utf-8")
                 self.send_response(status)
                 self.send_header("Content-Type", "application/json; charset=utf-8")
                 self.send_header("Content-Length", str(len(body)))
                 self.send_header("Cache-Control", "no-store")
+                self._cors()
                 self.end_headers()
                 self.wfile.write(body)
 
@@ -164,6 +221,21 @@ class CuePanel:
                 self.send_header("Content-Length", str(len(body)))
                 # Fonts never change within a version; let the browser cache.
                 self.send_header("Cache-Control", "public, max-age=86400")
+                self._cors()
+                self.end_headers()
+                self.wfile.write(body)
+
+            def _icon(self) -> None:
+                target = ICON_PATH
+                if not target.is_file():
+                    self._json({"error": "no icon"}, 404)
+                    return
+                body = target.read_bytes()
+                self.send_response(200)
+                self.send_header("Content-Type", "image/svg+xml")
+                self.send_header("Content-Length", str(len(body)))
+                self.send_header("Cache-Control", "public, max-age=86400")
+                self._cors()
                 self.end_headers()
                 self.wfile.write(body)
 
@@ -173,6 +245,7 @@ class CuePanel:
                 self.send_header("Content-Type", "text/html; charset=utf-8")
                 self.send_header("Content-Length", str(len(body)))
                 self.send_header("Cache-Control", "no-store")
+                self._cors()
                 self.end_headers()
                 self.wfile.write(body)
 
@@ -203,6 +276,15 @@ class CuePanel:
                         # (or blocks on a font request) is a worse failure than a
                         # slightly bigger repository.  165 KB, three files.
                         self._font(path)
+                    elif path == "/icon.svg":
+                        # The page's favicon, in a browser tab or a pywebview
+                        # window.  It is the very file the desktop shell's icons
+                        # are generated from, so the tab and the taskbar show the
+                        # same mark.  Only this path is served: a browser that
+                        # sees the <link rel="icon"> in panel.html uses it and
+                        # never asks for /favicon.ico, and answering that name
+                        # with SVG bytes would be a lie about the content type.
+                        self._icon()
                     elif path == "/api/health":
                         self._json(panel.health())
                     elif path == "/api/clock":
@@ -418,6 +500,7 @@ class CuePanel:
             "url": self.url,
             "current_run": self.current_run(),
             "stats": self.conductor.stats(),
+            "degraded": self.degraded_reason,
         }
 
     def events(self, since_seq: int = 0) -> dict[str, Any]:
@@ -433,6 +516,13 @@ class CuePanel:
         }
 
     # -- actions -----------------------------------------------------------
+
+    #: Sources for which the PANEL ITSELF is the observation surface.  Anything
+    #: else means a real sensor owns the evidence, and a click here must never
+    #: be allowed to close the loop -- otherwise the physical closed loop is
+    #: silently replaced by a self-report.  (Verified: a click used to satisfy a
+    #: run that was watching a serial port for a pattern that never arrived.)
+    PANEL_OBSERVED_SOURCES = frozenset({"", "none", "http", "inject"})
 
     def press(self, body: dict[str, Any]) -> dict[str, Any]:
         """Record the human's press.
@@ -455,6 +545,25 @@ class CuePanel:
                 # client_wall = server_wall + offset  =>  subtract to get ours
                 wall_t -= float(offset) / 1000.0
         recv = time.time()
+
+        run = self.conductor.get(run_id)
+        spec = run.plan.expect if run is not None else None
+        source = (spec.source if spec is not None else "none") or "none"
+        if source.split(":")[0] not in self.PANEL_OBSERVED_SOURCES:
+            # The agent is watching the physical world for this run (a serial
+            # prompt, a console key).  A click is a useful note -- the human
+            # thought they acted -- but it is NOT the evidence, so it must not
+            # satisfy the run.  Journal it rather than dropping the input.
+            self.conductor.note_panel_press(run_id, wall_t=wall_t)
+            return {
+                "ok": True,
+                "run_id": run_id,
+                "recorded": False,
+                "observed_by": source,
+                "reason": f"this run is observed by {source}, not the panel",
+                "status": None if run is None else run.status.value,
+            }
+
         # No input-stack correction: a click/keydown handler's timestamp measures
         # the browser event loop, not a keyboard driver, and applying the
         # console's 15 ms would bias every panel measurement by -15 ms.
@@ -463,6 +572,8 @@ class CuePanel:
         return {
             "ok": True,
             "run_id": run_id,
+            "recorded": True,
+            "observed_by": source,
             "received_wall_ms": recv * 1000.0,
             "used_client_time": wall_t is not None,
             "offset_ms": None if run is None else run.human_offset_ms,
@@ -507,6 +618,15 @@ class CuePanel:
         run = self.conductor.submit(plan, paused=True)
         with self._lock:
             self._prepared = run.id
+        # A paused submit resolves no grid, so the conductor's on_armed -- which
+        # means "the grid is now absolute times" -- correctly does not fire.  The
+        # panel must still learn that a cue exists, or an already-open panel goes
+        # on showing the previous run and a freshly-opened page is handed that
+        # stale run instead of this one (so `--paused` cues were invisible, and
+        # the Start button appeared to do nothing).  Announce it on the channel
+        # the panel already listens to; the page renders it as "armed, not
+        # started" because the schedule still has no beats.
+        self._on_armed(run)
         return {"ok": True, "run_id": run.id, "status": run.status.value, "url": self.url}
 
     def start(self, body: dict[str, Any]) -> dict[str, Any]:

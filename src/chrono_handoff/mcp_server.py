@@ -536,6 +536,13 @@ class ConductorServer:
             # whose timestamps never touch the OS keyboard stack.
             c.inject(run_id, payload=params.get("payload", "signal"), wall_t=wall_t, latency_s=0.0)
             return c.status(run_id)
+        if method == "note_press":
+            # A click that must be *recorded* but must NOT satisfy the run: the
+            # plan is waiting on a real sensor, so the panel is only a note.
+            # Kept separate from "press" (which injects evidence) because
+            # conflating them would let a UI click close a physical loop.
+            run_id = params["run_id"]
+            return {"ok": c.note_panel_press(run_id, wall_t=params.get("wall_t")), "run_id": run_id}
         if method == "status":
             return c.status(params["run_id"], include_events=bool(params.get("include_events", False)))
         if method == "list":
@@ -635,9 +642,42 @@ def autostart_daemon(port: int) -> dict[str, Any]:
 
     import subprocess
 
-    flags = subprocess.CREATE_NEW_CONSOLE if sys.platform == "win32" else 0
+    # Window mode.  The daemon's visible native window is the point when a human
+    # is watching, but it is noise when this autostart was triggered by a mere
+    # health probe (`pi-mcp-adapter doctor`, `/reload`, lifecycle="lazy"
+    # metadata refresh) -- the agent has not asked for anything yet.
+    #
+    # CHRONO_MCP_WINDOW:
+    #   "1"/unset (default) -> --window, i.e. visible window (previous behavior)
+    #   "0"/"false"/"no"    -> no window and no console (see the tradeoff below)
+    #   "hidden"            -> --window-hidden: start hidden, reveal on cue
+    mode = os.environ.get("CHRONO_MCP_WINDOW", "1").strip().lower()
+    window_args: list[str] = []
+    if mode in ("0", "false", "no"):
+        pass
+    elif mode == "hidden":
+        window_args = ["--window", "--window-hidden"]
+    else:
+        window_args = ["--window"]
+
+    # Console window.  A fresh console gives the daemon somewhere to read
+    # keystrokes and beep, so it is tied to whether we want any cue channel at
+    # all -- see daemon.py's module docstring and inputs.py's console_key
+    # source ("requires a real console").
+    #
+    #   mode=0  -> CREATE_NO_WINDOW.  Deliberately gives up console keys and
+    #              audio; use this for headless/automated runs.
+    #   mode=hidden/1 -> CREATE_NEW_CONSOLE, keeping the cue channel intact.
+    #
+    # Note the IPC server and the native window are unaffected either way.
+    if sys.platform == "win32":
+        flags = (subprocess.CREATE_NO_WINDOW if mode in ("0", "false", "no")
+                 else subprocess.CREATE_NEW_CONSOLE)
+    else:
+        flags = 0
+
     proc = subprocess.Popen(
-        [exe, "-m", "chrono_handoff.daemon", "--port", str(port), "--window"],
+        [exe, "-m", "chrono_handoff.daemon", "--port", str(port), *window_args],
         env=env, cwd=str(root), creationflags=flags,
         stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
     )
@@ -657,10 +697,24 @@ def autostart_daemon(port: int) -> dict[str, Any]:
 
 
 def build_mcp_server() -> Any:
-    """Create the FastMCP server.  Imported lazily so the core has no MCP dep."""
-    from mcp.server.fastmcp import FastMCP
+    """Create the MCP server.  Imported lazily so the core has no MCP dep.
 
-    mcp = FastMCP(SERVER_NAME, instructions=INSTRUCTIONS)
+    mcp 2.0 renamed `FastMCP` to `MCPServer` and moved it to
+    `mcp.server.mcpserver`.  The old location is gone, so importing it
+    unconditionally made `chrono-mcp` die with ModuleNotFoundError on any
+    modern install.  Both classes expose the same `add_tool`/`run` surface, so
+    one alias covers the whole 1.x/2.x range instead of pinning an upper bound
+    that would break users whose other tools already need mcp 2.
+    """
+    try:
+        from mcp.server.mcpserver import MCPServer as _MCP
+    except ImportError:  # mcp < 2
+        # Not present under mcp 2.x, so static checkers flag the import; it is
+        # the supported path on 1.x.  basedpyright ignores `# type: ignore`
+        # unless enableTypeIgnoreComments is on, hence the `pyright:` form.
+        from mcp.server.fastmcp import FastMCP as _MCP  # pyright: ignore[reportAttributeAccessIssue]
+
+    mcp = _MCP(SERVER_NAME, instructions=INSTRUCTIONS)
 
     for name, spec in TOOLS.items():
         fn = spec["fn"]

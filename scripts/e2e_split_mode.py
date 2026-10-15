@@ -67,6 +67,9 @@ def main() -> int:
                     lead_s=0.6, ioi_ms=250, tail_beats=3, expect_source="none",
                     duration_s=4, open_panel=False)
     OUT["armed_without_window"] = r1["run_id"]
+    # Initialised so a deadline that expires before the first poll reports
+    # "unknown" -- a loud failure -- instead of raising UnboundLocalError.
+    st = "unknown"
     deadline = time.time() + 8
     while time.time() < deadline:
         st = agent.call("status", run_id=r1["run_id"])["status"]
@@ -131,6 +134,7 @@ def main() -> int:
     r3 = agent.call("cue", instruction="press RESET (window closed again)",
                     target_in_s=1.2, lead_s=0.5, ioi_ms=250, tail_beats=2,
                     expect_source="none", duration_s=3, open_panel=False)
+    st = "unknown"
     deadline = time.time() + 7
     while time.time() < deadline:
         st = agent.call("status", run_id=r3["run_id"])["status"]

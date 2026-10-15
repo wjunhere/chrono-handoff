@@ -6,20 +6,97 @@
 
 ## 一、装
 
+项目零运行时依赖，但**两件事必须做对**：用哪个 Python，以及装进哪个解释器。
+
+### 一.0 Python 用 3.13+（强烈建议，有实测依据）
+
+代码在 3.10+ 都能跑（`pyproject.toml` 也是这么声明的），但对本项目这个
+**靠计时精度立身**的工具，3.13 的线程调度抖动比 3.11/3.12 好很多。
+
+同一台机器、同一次测试（`selftest` 的 under-load 项：2 个 CPU 密集线程抢占下的 40 拍落点）：
+
+| Python | 突破 20ms 门槛 | median | worst 最大 |
+|--------|--------------|--------|-----------|
+| 3.11.15 | 3/20 | 2.834 ms | 32.08 ms |
+| 3.12.13 | **4/20** | 3.005 ms | 26.96 ms |
+| **3.13.12** | **0/20** | **0.345 ms** | **11.83 ms** |
+
+三个都是 uv 管理的同族 build，排除了构建 flag 与安装方式的干扰；交替重跑结论一致。
+3.12 有约 20% 概率让 `chrono selftest` 间歇性失败——**是真的抖动，不是测试问题**。
+
 ```bash
 cd /b/vibe_program/chrono-handoff
-python -m pip install -e .
+uv python install 3.13
+uv venv .venv --python "$(uv python find 3.13)"
+uv pip install --python .venv/Scripts/python.exe -e ".[all]"
 ```
 
-装完会有 `chrono` 命令（也把包加进了 Python 环境）。**先自检**：
+之后**一律用 venv 里的解释器**（激活，或打全路径）：
 
 ```bash
-chrono doctor        # 看 console / audio / pyserial 是否就绪
-chrono selftest      # 10 项机制自检，应 10/10
+.venv/Scripts/chrono doctor        # 应看到 panel window: native
+.venv/Scripts/chrono selftest      # 10 项机制自检，应 10/10
 ```
 
-> 没装 pywebview 也能跑（自动降级成浏览器标签页），但想要独立悬浮窗口请：
-> `python -m pip install pywebview`（Windows 11 自带 WebView2 运行时）
+> `uv venv` 重复执行会报错（不是幂等的），要换版本得先 `rm -rf .venv`。
+
+### 一.1 本机 `uv` 的已知坑（MSYS2 python 抢 PATH）
+
+本机系统 PATH 第 5 位是 `B:\MSYS2\ucrt64\bin`，里面的 `python3.exe` 带
+`mingw_x86_64_ucrt_gnu` 平台标记。`uv` 在**需要自己发现 Python**时（即当前目录
+还没有 `.venv`）会从 PATH 头部拿到它，然后直接失败：
+
+```
+error: Failed to inspect Python interpreter from first executable in the search path
+  Caused by: Can't use Python at `B:\MSYS2\ucrt64\bin\python3.exe`
+  Caused by: Unknown operating system: `mingw_x86_64_ucrt_gnu`
+```
+
+**实测无效的绕法**（不用试）：`UV_PYTHON_PREFERENCE`（四个取值全没用）、
+`UV_NO_SYSTEM_PYTHON=1`、`UV_PYTHON=…`、`uv.toml` 里的 `python-preference`、
+`.python-version`。因为 uv 是**在解析 `--python 3.13` 这个版本号时就去做发现**，
+那个阶段不受这些配置控制。
+
+**有效的做法**：
+
+1. 让 uv 自己下载并管理一个解释器，**避开 PATH 发现**：
+   ```bash
+   uv python install 3.13          # 落到 `uv python dir` 下，不碰 PATH
+   uv venv .venv --python 3.13
+   ```
+   若本机已经有 uv 管理的解释器（`uv python list --only-installed`），
+   直接给它完整路径最省事：
+   ```bash
+   uv venv .venv --python "$(uv python find 3.13)"
+   ```
+2. **`.venv` 一旦存在，这个错误就不再出现** —— uv 会直接用它，不再去发现。
+   所以后续 `uv pip install` 带不带 `--python 3.13` 都行。
+3. 若本机 PATH 里有个抢在前面的 mingw python（见 §一.1），**不要随便去改系统 PATH**：
+   同一目录（如 `B:\MSYS2\ucrt64\bin`）往往同时装着 `gcc`/`make`/`cmake`，
+   而且它和 Anaconda 的 GCC 运行时**同名不同 ABI**。把 Anaconda 插到它前面，
+   会让 MSYS2 编译的程序加载错版本的 `libstdc++-6.dll`，直接报
+   `0xC0000139 STATUS_ENTRYPOINT_NOT_FOUND`（已实测复现；本机 131 个 MSYS2
+   程序依赖该 DLL）。
+
+   **关键机制：Windows 的生效顺序是 `系统级 + ";" + 用户级`** —— 系统级整体在前。
+   所以把 python 配在**用户级**，无论怎么排序都胜不过**系统级**里的 MSYS2。
+   验证：`[Environment]::GetEnvironmentVariable('PATH','Machine')`。
+   要改就改系统级，且只能**追加到末尾**（追加仍安全，插到前面会崩）。
+
+   但即使追加到末尾，裸 `python` 也仍然命中 MSYS2（它在系统级更靠前）。
+   想让裸 `python` 指向别处，只能把那个 python 从 MSYS2 里卸掉，
+   而那会连带卸载依赖它的库。**结论：不动它，用 venv。**
+
+> 判定方法：`chrono doctor` 的 `panel window` 行。它直接打出**当前解释器的
+> 绝对路径**，一眼能看出装的和跑的是不是同一个。
+
+### 一.2 没装 pywebview 会怎样
+
+仍能跑：自动降级成浏览器标签页，**并在面板顶部明示**（琥珀色提示条）＋
+`chrono doctor` 报 `panel window: browser tab` ＋ stderr 给出该装的解释器路径。
+不会像以前那样静默地看起来像个网页应用。
+
+独立悬浮窗口需要 `pywebview`（Windows 11 自带 WebView2 运行时）。
 
 ---
 
@@ -96,10 +173,16 @@ chrono demo --instruction "按一下开发板上的 RESET 键" --in 6 --paused
 **没装包时**（不想 `pip install -e .`），把 `command`/`args` 换成：
 
 ```json
-"command": "python",
+"command": "<repo>/.venv/Scripts/python.exe",
 "args": ["-m", "chrono_handoff.mcp_server"],
-"env": { "PYTHONPATH": "path/to/chrono-handoff/src" }
+"env": { "PYTHONPATH": "<repo>/src" }
 ```
+
+（把 `<repo>` 换成仓库的实际位置。这里不写现成路径：本机绝对路径不该进
+公开仓库，而写一个人的反而最容易被照抄。）
+
+> 指向项目 venv，别指向全局解释器：MCP server 装在哪，`pywebview` 就得在哪。
+> 用错解释器时 agent 仍能出提示，只是窗口降级成浏览器标签页，且难以察觉。
 
 ### 为什么 searchKeywords 用纯英文
 
@@ -198,3 +281,7 @@ python scripts/e2e_split_mode.py    # 分离模式（13 项）
 | 想换端口 | daemon/MCP 都认 `CHRONO_IPC_PORT`；面板用 `--panel-port` |
 
 不想自动拉 daemon 的话：`CHRONO_AUTOSTART=0`，然后自己 `chrono daemon --background`。
+
+自动拉起时不想弹窗（如 MCP 健康检查、`/reload` 触发）：`CHRONO_MCP_WINDOW=0`。
+注意这会**一并放弃控制台**（无键盘输入、无提示音）—— daemon 需要真控制台才能读键和蜂鸣。
+若仍要窗口但不想它一启动就抢焦点：`CHRONO_MCP_WINDOW=hidden`（cue 触发时再显现，控制台保留）。

@@ -46,6 +46,7 @@ from .calibrate import Calibration, CalibrationStore, task_signature
 from .clock import CLOCK, Scheduler, now
 from .cue import AudioSink, BellAudio, MultiVisual, VisualCue, default_audio
 from .effectors import Effector, LogEffector, make_effector
+from .home import journal_dir as journal_dir_default
 from .inputs import (
     DEFAULT_KEY_LATENCY_S,
     InputSource,
@@ -205,6 +206,10 @@ class Run:
             "beats_total": len(self.beats),
             "notes": self.notes,
             "meta": self.plan.meta,
+            # Which source owns the evidence.  CuePanel.press needs it to decide
+            # whether a panel click is a measurement or just a note, and a
+            # display client has no other way to learn it from a snapshot.
+            "expect_source": (self.plan.expect.source if self.plan.expect is not None else "none"),
         }
         if self.events:
             d["last_seq"] = self.events[-1].seq
@@ -241,8 +246,7 @@ class Conductor:
         self.verbose = verbose
         self.poll_interval_ms = poll_interval_ms
 
-        env_home = os.environ.get("CHRONO_HOME")
-        self.journal_dir = Path(journal_dir) if journal_dir else (Path(env_home) if env_home else Path.cwd()) / "logs"
+        self.journal_dir = Path(journal_dir) if journal_dir else journal_dir_default()
         self.journal_dir.mkdir(parents=True, exist_ok=True)
         self.journal = JournalWriter(self.journal_dir, enabled=journal_enabled)
 
@@ -584,6 +588,10 @@ class Conductor:
         return beats
 
     def _schedule_beats(self, run: Run, beats: list[Beat]) -> None:
+        # Grids are expressed relative to the origin, which _build_grid stamps
+        # before calling us.  Assert it here rather than threading Optional
+        # through every lattice computation below.
+        assert run.origin is not None
         plan = run.plan
         total = len(beats)
 
@@ -659,8 +667,12 @@ class Conductor:
 
     def _schedule_window(self, run: Run, win: WindowSpec) -> None:
         assert run.origin is not None
-        start = run.origin + win.start_off_ms / 1000.0
-        end = run.origin + win.end_off_ms / 1000.0
+        # Local binding, not ``run.origin``: ``open_window`` below runs later and
+        # the assert's narrowing does not reach into a closure (the same trap the
+        # beat grid hit).
+        origin = run.origin
+        start = origin + win.start_off_ms / 1000.0
+        end = origin + win.end_off_ms / 1000.0
         interval = max(0.001, win.interval_ms / 1000.0)
         state = {"n": 0}
 
@@ -691,11 +703,11 @@ class Conductor:
                 self._emit(run, "action_fired", index=idx, action=action.get("type", "?"), detail=detail)
 
         if start <= CLOCK():
-            self._emit(run, "window_opened", at=round((CLOCK() - run.origin), 6), late_by_ms=round((CLOCK() - start) * 1000, 2))
+            self._emit(run, "window_opened", at=round((CLOCK() - origin), 6), late_by_ms=round((CLOCK() - start) * 1000, 2))
             run.window_job = self.scheduler.grid(CLOCK(), interval, sweep, name=f"{run.id}:window")
         else:
             def open_window(_d: float) -> None:
-                self._emit(run, "window_opened", at=round((CLOCK() - run.origin), 6), late_by_ms=round((CLOCK() - start) * 1000, 2))
+                self._emit(run, "window_opened", at=round((CLOCK() - origin), 6), late_by_ms=round((CLOCK() - start) * 1000, 2))
                 run.window_job = self.scheduler.grid(CLOCK(), interval, sweep, name=f"{run.id}:window")
 
             self.scheduler.at(start, open_window, name=f"{run.id}:window_open")
@@ -707,13 +719,17 @@ class Conductor:
         "blocking wait" anti-pattern is not allowed to reappear as an
         unbounded run.
         """
+        # The origin is stamped before a deadline can be computed; binding it to
+        # a local keeps the arithmetic below free of Optional.
+        assert run.origin is not None
+        origin = run.origin
         plan = run.plan
         need = [plan.duration_s]
         # The tail must be allowed to finish even if nothing else constrains it.
         if run.zero_at is not None:
-            need.append(run.zero_at - run.origin + plan.tail_beats * plan.ioi_ms / 1000.0 + 0.2)
+            need.append(run.zero_at - origin + plan.tail_beats * plan.ioi_ms / 1000.0 + 0.2)
         if plan.expect is not None:
-            need.append((run.zero_at or run.origin) - run.origin + plan.expect.timeout_s)  # type: ignore[operator]
+            need.append((run.zero_at or origin) - origin + plan.expect.timeout_s)
         if plan.on_window is not None:
             need.append(plan.on_window.end_off_ms / 1000.0 + 4.0)
         if plan.verify is not None:
@@ -747,6 +763,34 @@ class Conductor:
                 seen.append(obs)
                 self._on_signal(run, obs)
         return seen
+
+    def note_panel_press(self, run_id: str, wall_t: float | None = None) -> bool:
+        """Journal that the operator clicked the panel, WITHOUT counting it as
+        the evidence this run is waiting for.
+
+        The panel is only the observation surface when the plan says so.  When
+        a real sensor owns the evidence (a serial prompt, a console key), a
+        click is still worth recording -- the human did something and the agent
+        should be able to see it -- but letting it satisfy the run would swap
+        the physical closed loop for a self-report.  Verified before this
+        existed: a click on the panel satisfied a run that was waiting for
+        ``PMON2020`` on a serial port that never answered.
+
+        Returns True if the note was recorded against a live run.
+        """
+        run = self.get(run_id)
+        if run is None or run.status in TERMINAL:
+            return False
+        t = self.mono_from_wall(wall_t) if wall_t is not None else CLOCK()
+        spec = run.plan.expect
+        self._emit(
+            run,
+            "panel_press_not_evidence",
+            t_rel=None if run.origin is None else round(t - run.origin, 6),
+            observed_by=(spec.source if spec is not None else "none"),
+            note="the panel is not the evidence source for this run",
+        )
+        return True
 
     def inject(
         self,
@@ -902,6 +946,13 @@ class Conductor:
             "visual_style": plan.visual_style,
             "tail_beats": plan.tail_beats,
             "meta": plan.meta,
+            #: Which channel is treated as *evidence that the human acted*.
+            #: The panel needs this to know whether IT is the observation
+            #: surface (show a press control) or merely the reminder while a
+            #: real sensor watches (serial, console).  Without it the panel
+            #: always looked like a button to push, which misrepresents every
+            #: run whose evidence comes from the hardware.
+            "expect_source": None if plan.expect is None else plan.expect.source,
             "origin_wall_ms": None if run.origin is None else round(self.wall_at(run.origin) * 1000.0, 3),
             "zero_wall_ms": None if run.zero_at is None else round(self.wall_at(run.zero_at) * 1000.0, 3),
             "target_wall_ms": None if run.target_at is None else round(self.wall_at(run.target_at) * 1000.0, 3),

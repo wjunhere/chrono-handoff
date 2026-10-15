@@ -209,7 +209,7 @@ def report(session: Session, excluded_warmup: bool = True) -> dict[str, Any]:
         "trials_with_signal": len(usable),
         "missed": len(kept) - len(usable),
         "by_condition": by_condition,
-        "overall": describe([t.offset_ms for t in usable]),
+        "overall": describe([t.offset_ms for t in usable if t.offset_ms is not None]),
         "residual": describe(residuals) if residuals else {"n": 0},
         "applied_offset_ms": describe(applied) if applied else {"n": 0},
         "machine_sched": {

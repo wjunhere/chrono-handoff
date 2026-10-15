@@ -46,10 +46,40 @@ GEO_JS = """
     const b = e.getBoundingClientRect(); return {x:+b.x.toFixed(1),y:+b.y.toFixed(1),
     w:+b.width.toFixed(1),h:+b.height.toFixed(1)}; };
   const c = document.getElementById('clock');
+  const st = document.querySelector('.stage');
+  const gd = document.getElementById('grid');
   return {
     vw: innerWidth, vh: innerHeight,
     docW: document.documentElement.scrollWidth,
     docH: document.documentElement.scrollHeight,
+    // The CARD is where clipping actually happens: .stage has overflow:hidden
+    // for its rounded corners, so a layout mistake inside it shows up as
+    // content that is simply missing -- no scrollbar, no error.  The document
+    // never overflows in that case (body.scrollWidth stays correct), which is
+    // why checking the document alone missed a real bug: a 20 s lead made the
+    // grid column 614px wide, every child inherited it, and the card quietly
+    // cropped the GO button and every right-aligned metric value.
+    cardW: st ? st.clientWidth : 0,
+    cardH: st ? st.clientHeight : 0,
+    cardScrollW: st ? st.scrollWidth : 0,
+    cardScrollH: st ? st.scrollHeight : 0,
+    railW: gd ? gd.clientWidth : 0,
+    railScrollW: gd ? gd.scrollWidth : 0,
+    // scrollWidth is USELESS here: #grid has overflow:visible, and for a
+    // non-scroll-container scrollWidth just echoes clientWidth.  An earlier
+    // version of this check compared them and could therefore never fail.
+    // What matters is where the cells actually land, so measure them.
+    railLeft: gd ? +gd.getBoundingClientRect().left.toFixed(1) : null,
+    railRight: gd ? +gd.getBoundingClientRect().right.toFixed(1) : null,
+    railLastRight: gd && gd.lastElementChild
+      ? +gd.lastElementChild.getBoundingClientRect().right.toFixed(1) : null,
+    railLastLeft: gd && gd.lastElementChild
+      ? +gd.lastElementChild.getBoundingClientRect().left.toFixed(1) : null,
+    goRight: (() => {
+      const a = document.querySelector('#grid .cell.accent');
+      return a ? +a.getBoundingClientRect().right.toFixed(1) : null;
+    })(),
+    cardRight: st ? +st.getBoundingClientRect().right.toFixed(1) : null,
     titlebar: r('titlebar'),
     panel: r('panel') || r('settings'),
     clock: r('clock'),
@@ -131,6 +161,34 @@ def main() -> int:
             time.sleep(0.4)
             OUT["settings_open"] = js("document.body.classList.contains('settings-open')")
             OUT["sheet_geo"] = js(GEO_JS)
+            js("document.getElementById('tb-set').click()")
+            time.sleep(0.3)
+
+            # ---- a DENSE rail: the case that used to break the whole card ----
+            #
+            # The rail renders one cell per beat, so a long lead makes it wide.
+            # With a 20 s lead it needed 611px inside a ~390px content box, the
+            # grid column grew to its min-content, and EVERY child inherited that
+            # width while the card stayed 439px and cropped them -- GO button and
+            # all the right-aligned metric values included.  A 6 s lead (what the
+            # rest of this file arms) is nowhere near that, which is why the
+            # existing "no overflow" checks passed while the UI was visibly cut.
+            w.conductor.cue(instruction="press RESET", target_in_s=90.0, lead_s=20.0,
+                            ioi_ms=500, tail_beats=6, expect_source="none",
+                            duration_s=240, open_panel=False)
+            time.sleep(2.5)
+            # Back to the default size: the fix has to hold at the size the
+            # widget ships at, not only at whatever size was left over.
+            w.window.resize(460, 620)
+            time.sleep(1.0)
+            OUT["dense"] = js(GEO_JS)
+            OUT["dense_cells"] = js("document.querySelectorAll('#grid .cell').length")
+            OUT["dense_rail_gap"] = js(
+                "getComputedStyle(document.getElementById('grid')).gap")
+            OUT["dense_metric_values"] = js(
+                "[...document.querySelectorAll('.m b')].filter(e => e.getBoundingClientRect().right"
+                " <= innerWidth + 1).length")
+            OUT["dense_metric_count"] = js("document.querySelectorAll('.m b').length")
         except Exception as exc:
             OUT["error"] = f"{type(exc).__name__}: {exc}"
         finally:
@@ -153,14 +211,21 @@ def main() -> int:
     # CARD, not the window.  Asserting against the viewport width would forbid
     # the margin and fail a correct layout.
     check("title bar spans the whole card",
-          tb and pn and abs(tb["w"] - pn["w"]) <= 2 and tb["w"] > d.get("vw", 0) * 0.85,
-          f"titlebar.w={tb['w'] if tb else '?'} card.w={pn['w'] if pn else '?'} viewport.w={d.get('vw')}")
-    check("title bar sits above the content", tb and pn and tb["y"] + tb["h"] <= pn["y"] + 2,
+          bool(tb and pn and abs(tb["w"] - pn["w"]) <= 2 and tb["w"] > d.get("vw", 0) * 0.85),
+          str(f"titlebar.w={tb['w'] if tb else '?'} card.w={pn['w'] if pn else '?'} viewport.w={d.get('vw')}"))
+    check("title bar sits above the content", bool(tb and pn and tb["y"] + tb["h"] <= pn["y"] + 2),
           f"titlebar bottom={tb['y']+tb['h'] if tb else '?'} panel top={pn['y'] if pn else '?'}")
     check("no horizontal overflow", d.get("docW", 0) <= d.get("vw", 0) + 1,
           f"scrollWidth={d.get('docW')} vs width={d.get('vw')}")
     check("no vertical overflow", d.get("docH", 0) <= d.get("vh", 0) + 1,
           f"scrollHeight={d.get('docH')} vs height={d.get('vh')}")
+    # Card-level, not document-level: .stage is overflow:hidden, so this is where
+    # clipping shows up as missing content with no scrollbar and no error.
+    check("card does not clip its content",
+          d.get("cardScrollW", 0) <= d.get("cardW", 0) + 1
+          and d.get("cardScrollH", 0) <= d.get("cardH", 0) + 1,
+          f"card={d.get('cardW')}x{d.get('cardH')} "
+          f"scroll={d.get('cardScrollW')}x{d.get('cardScrollH')}")
     check("three window buttons present", bool(d.get("hasMin") and d.get("hasMax") and d.get("hasClose")))
     check("close button is hit-testable", d.get("closeHittable") is True)
 
@@ -170,7 +235,7 @@ def main() -> int:
     check("clock fits inside the window", ck.get("h", 999) < c.get("vh", 0) and ck.get("w", 999) <= c.get("vw", 0),
           f"clock={ck.get('w')}x{ck.get('h')} viewport={c.get('vw')}x{c.get('vh')}")
     check("beat grid built", (OUT.get("cells") or 0) > 0, f"{OUT.get('cells')} cells")
-    check("press button labelled", bool(OUT.get("press_label")), OUT.get("press_label"))
+    check("press button labelled", bool(OUT.get("press_label")), str(OUT.get("press_label") or ""))
     ct = str(OUT.get("clock_text") or "")
     check("countdown shows a number (not '+' of nothing)", ct.isdigit() and len(ct) == 2,
           f"clock={ct!r} phase={OUT.get('phase_text')!r}")
@@ -191,8 +256,30 @@ def main() -> int:
     check("settings sheet opens", OUT.get("settings_open") is True)
     sg = OUT.get("sheet_geo") or {}
     stb = sg.get("titlebar")
-    check("title bar still visible with settings open", stb and stb.get("w", 0) > 0,
+    check("title bar still visible with settings open", bool(stb and stb.get("w", 0) > 0),
           f"titlebar.w={stb.get('w') if stb else '?'}")
+
+    dn = OUT.get("dense") or {}
+    check("a dense rail still keeps the card inside the window",
+          dn.get("cardScrollW", 0) <= dn.get("cardW", 0) + 1
+          and dn.get("cardScrollH", 0) <= dn.get("cardH", 0) + 1,
+          f"{OUT.get('dense_cells')} cells; card={dn.get('cardW')}x{dn.get('cardH')} "
+          f"scroll={dn.get('cardScrollW')}x{dn.get('cardScrollH')}")
+    check("a dense rail fits inside its own track (tail not clipped)",
+          dn.get("railLastRight") is not None
+          and dn.get("railLastRight", 1e9) <= dn.get("railRight", 0) + 1,
+          f"last cell right={dn.get('railLastRight')} rail right={dn.get('railRight')} "
+          f"({OUT.get('dense_cells')} cells, gap={OUT.get('dense_rail_gap')})")
+    check("the GO cell is still on screen with a dense rail",
+          dn.get("goRight") is not None and dn.get("cardRight") is not None
+          and dn.get("goRight", 1e9) <= dn.get("cardRight", 0) + 1,
+          f"GO right={dn.get('goRight')} card right={dn.get('cardRight')}")
+    # The symptom the user actually reported: values are right-aligned, so they
+    # are the first thing to disappear when the card overflows.
+    check("every metric value is still on screen with a dense rail",
+          OUT.get("dense_metric_values", 0) == OUT.get("dense_metric_count", -1)
+          and bool(OUT.get("dense_metric_count")),
+          f"{OUT.get('dense_metric_values')}/{OUT.get('dense_metric_count')} values inside the window")
     if OUT.get("error"):
         check("no runtime errors", False, OUT["error"])
 

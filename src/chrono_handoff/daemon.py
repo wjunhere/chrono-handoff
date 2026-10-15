@@ -27,14 +27,12 @@ from typing import Any
 
 from .audio import AUDIO_CHOICES
 from .conductor import Conductor
+from .home import chrono_home
 from .mcp_server import DEFAULT_HOST, DEFAULT_IPC_PORT, ConductorServer
 
 
 def pidfile_path() -> Path:
-    env = os.environ.get("CHRONO_HOME")
-    base = Path(env) if env else Path.home() / ".chrono-handoff"
-    base.mkdir(parents=True, exist_ok=True)
-    return base / "daemon.json"
+    return chrono_home() / "daemon.json"
 
 
 def write_pidfile(port: int, extra: dict | None = None) -> None:
@@ -112,11 +110,21 @@ def run_daemon(
         try:
             panel_srv = CuePanel(conductor, host=host, port=panel_port, auto_open=panel_open)
             panel_srv.start_background()
-            conductor.on_panel_open(lambda _rid: panel_srv.open_browser())
             panel_url = panel_srv.url
         except SystemExit as exc:
             panel_srv = None
             panel_url = f"(unavailable: {exc})"
+
+        if panel_srv is not None:
+            # on_panel_open's contract is ``-> None``; open_browser() returns a
+            # bool, so it goes through an explicit void callback.  The local
+            # binding is what keeps it non-Optional inside the closure.
+            opened = panel_srv
+
+            def _open_panel(_rid: str) -> None:
+                opened.open_browser()
+
+            conductor.on_panel_open(_open_panel)
 
     print(
         f"chrono-handoff conductor listening on {host}:{port}\n"

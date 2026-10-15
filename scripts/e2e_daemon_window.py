@@ -75,6 +75,9 @@ def main() -> int:
 
         # Wait out the budget; with expect_source="none" the cue must reach
         # TIMEOUT on its own rather than hanging.
+        # Initialised so a deadline that expires before the first poll reports
+        # "unknown" -- a loud failure -- instead of raising UnboundLocalError.
+        st = "unknown"
         deadline = time.time() + 9.0
         while time.time() < deadline:
             st = client.call("status", run_id=r["run_id"])["status"]

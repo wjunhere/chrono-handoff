@@ -35,7 +35,7 @@ from typing import Any
 from . import winshell
 from .conductor import Conductor
 from .remote import RemoteConductor
-from .settings import Settings
+from .settings import MIN_LOGIC_H, MIN_LOGIC_W, Settings
 from .webui import CuePanel
 
 DEFAULT_TITLE = "chrono-handoff"
@@ -71,94 +71,8 @@ def _set_on_top(window: Any, value: bool) -> bool:
     return False
 
 
-#: Which window edges the panel offers as resize grips.
-RESIZE_EDGES = {"n", "s", "e", "w", "ne", "nw", "se", "sw"}
-
 #: Set CHRONO_RESIZE_DEBUG=1 to trace every resize iteration.
 _RESIZE_DEBUG = os.environ.get("CHRONO_RESIZE_DEBUG") == "1"
-
-
-def _hwnd(window: Any) -> int:
-    import ctypes
-
-    return int(ctypes.windll.user32.FindWindowW(None, window.title))
-
-
-def _apply_geometry(window: Any, x: int, y: int, w: int, h: int) -> None:
-    """Move and resize in ONE Win32 call, in physical pixels.
-
-    Deliberately bypasses pywebview's ``move``/``resize``: those are two
-    separately marshalled calls (so a frame can be applied between them, showing
-    the window jump), and their units are not obviously physical pixels while
-    ``GetWindowRect`` definitely is.  ``SetWindowPos`` is atomic, synchronous,
-    and unambiguously in device pixels -- which is what makes "the pointer moved
-    110 px, the window grew 110 px" actually true.
-    """
-    if sys.platform == "win32":
-        import ctypes
-
-        SWP_NOZORDER, SWP_NOACTIVATE = 0x0004, 0x0010
-        ctypes.windll.user32.SetWindowPos(
-            _hwnd(window), 0, int(x), int(y), int(w), int(h),
-            SWP_NOZORDER | SWP_NOACTIVATE,
-        )
-        return
-    window.resize(int(w), int(h))
-
-
-def _clamp_to_screens(x: int, y: int, w: int, h: int) -> tuple[int, int]:
-    """Pull a window back onto a visible screen if it would open off-screen.
-
-    A remembered position is a liability: unplug the external monitor, change
-    resolution, or change the DPI scale, and the saved coordinates can land
-    entirely outside the desktop.  Then the widget starts *invisible* and there
-    is nothing on screen to drag back -- the user has to edit the JSON by hand.
-    Measured here: a stale y=2047 on a 1067-tall desktop.
-
-    Requires at least a corner's worth of overlap with the virtual desktop;
-    otherwise the window is centred on the primary monitor.
-    """
-    if sys.platform != "win32":
-        return x, y
-    try:
-        import ctypes
-
-        u = ctypes.windll.user32
-        vx, vy = u.GetSystemMetrics(76), u.GetSystemMetrics(77)     # virtual screen origin
-        vw, vh = u.GetSystemMetrics(78), u.GetSystemMetrics(79)     # virtual screen size
-    except Exception:
-        return x, y
-    if vw <= 0 or vh <= 0:
-        return x, y
-    margin = 80                               # keep a grabbable strip on screen
-    if vx - margin < x < vx + vw - margin and vy - margin < y < vy + vh - margin:
-        return x, y
-    cx = vx + max(0, (vw - w) // 2)
-    cy = vy + max(0, (vh - h) // 2)
-    return int(cx), int(cy)
-
-
-def _apply_move(window: Any, x: int, y: int) -> None:
-    """Move without resizing (SWP_NOSIZE), in physical pixels."""
-    if sys.platform == "win32":
-        import ctypes
-
-        SWP_NOSIZE, SWP_NOZORDER, SWP_NOACTIVATE = 0x0001, 0x0004, 0x0010
-        ctypes.windll.user32.SetWindowPos(
-            _hwnd(window), 0, int(x), int(y), 0, 0, SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE
-        )
-        return
-    window.move(int(x), int(y))
-
-
-def _window_rect(window: Any) -> tuple[int, int, int, int]:
-    """(x, y, w, h) in physical pixels."""
-    import ctypes
-    import ctypes.wintypes
-
-    r = ctypes.wintypes.RECT()
-    ctypes.windll.user32.GetWindowRect(_hwnd(window), ctypes.byref(r))
-    return r.left, r.top, r.right - r.left, r.bottom - r.top
 
 #: Which window edges the panel offers as resize grips.
 RESIZE_EDGES = {"n", "s", "e", "w", "ne", "nw", "se", "sw"}
@@ -166,7 +80,9 @@ RESIZE_EDGES = {"n", "s", "e", "w", "ne", "nw", "se", "sw"}
 #: Minimum window size, in **logical** pixels (what the user perceives and what
 #: create_window takes).  Converted to physical for SetWindowPos -- see
 #: _dpi_scale: this machine runs at 150%, so the physical minimum is 1.5x this.
-MIN_LOGIC_W, MIN_LOGIC_H = 320, 360
+#:
+#: Imported from settings.py because the settings file's own clamp has to use
+#: the same floor -- it used to clamp to 380x240, sizes no window would take.
 
 
 def _dpi_scale(window: Any) -> float:
@@ -420,29 +336,29 @@ class CueWindow:
         drag_session: dict[str, int] = {}
 
         # -- settings ------------------------------------------------------
-        def get_settings() -> dict:
-            return panel.settings.to_dict()
-
-        def save_settings(patch: dict | None = None) -> dict:
-            result = panel.update_settings(patch or {})
-            _bind_css_window_tweaks(win, panel.settings)
-            return result
-
-        def reset_settings() -> dict:
-            cfg = panel.reset_settings()
-            _bind_css_window_tweaks(win, panel.settings)
-            return cfg
-
-        def apply_window(patch: dict | None = None) -> dict:
-            """React to window-affecting settings without a restart."""
-            cfg = Settings(**{**panel.settings.to_dict(), **(patch or {})})
+        # Settings are NOT on the bridge.  This process also serves the page
+        # over HTTP (``url`` is ``panel.url``), so the page reads and writes
+        # them with ``fetch("/api/settings")``.  The native window reacts
+        # through ``panel.window_hooks``, which CuePanel.update_settings() and
+        # reset_settings() call -- so an HTTP write and a bridge write would do
+        # the same thing, and a bridge copy is dead weight with a second,
+        # divergent path to maintain.
+        #
+        # Hooks take the new value and are called for the keys listed here.
+        # ``scale`` (a page-side UI scale) and ``frameless`` (fixed at window
+        # creation) have no runtime hook on purpose.
+        def _resize_to_settings(_value: Any = None) -> None:
             try:
-                win.resize(int(cfg.width), int(cfg.height))
+                win.resize(int(panel.settings.width), int(panel.settings.height))
             except Exception:
                 pass
-            _set_on_top(win, bool(cfg.always_on_top))
-            _bind_css_window_tweaks(win, cfg)
-            return {"ok": True}
+
+        panel.window_hooks.update({
+            "always_on_top": lambda value: _set_on_top(win, bool(value)),
+            "opacity": lambda _value: _bind_css_window_tweaks(win, panel.settings),
+            "width": _resize_to_settings,
+            "height": _resize_to_settings,
+        })
 
         # -- window controls ----------------------------------------------
         def set_on_top(value: bool = True) -> dict:
@@ -485,9 +401,6 @@ class CueWindow:
             except Exception:
                 pass
             return {"ok": True}
-
-        def health() -> dict:
-            return panel.health()
 
         def toggle_maximize() -> dict:
             """Maximize/restore the widget.
@@ -623,18 +536,33 @@ class CueWindow:
         # x/y/size straight off the real window -- which is more accurate and
         # cannot disagree with the OS.  Dead bridge surface is worse than none:
         # it invites a future caller to trust a second source of truth.
+        #
+        # What is left is *only* window chrome: an operation on the OS window,
+        # which no HTTP route can perform because the server does not own the
+        # window.  Settings and health used to be here too; they moved to HTTP.
+        # The contract is written down in docs/shell-contract.md -- keep the two
+        # in step, and add a probe to SHELL_BACKENDS in statics/panel.html when
+        # a new host (Tauri, Qt) implements it.
+        # -- diagnostics ------------------------------------------------
+        def page_note(text: str = "") -> dict:
+            """A log sink the page can write to.
+
+            The page has no console anyone can read -- a throw inside its script
+            leaves a panel that looks merely idle, with nothing anywhere to say
+            what happened.  Kept in step with the Tauri shell's command of the
+            same name so the seam behaves the same on either host.
+            """
+            print(f"[page] {text}", flush=True)
+            return {"ok": True}
+
         window.expose(
-            get_settings,
-            save_settings,
-            reset_settings,
-            apply_window,
+            apply_theme,
+            page_note,
             set_on_top,
             set_opacity,
             minimize,
             close,
-            health,
             toggle_maximize,
-            apply_theme,
             begin_resize,
             update_resize,
             end_resize,
@@ -675,19 +603,12 @@ class CueWindow:
         matter -- a restarted daemon, a changed IPC shape, or a dropped poll all
         self-heal on the next tick, and nothing needs a reverse channel.
         """
-
-        def watch() -> None:
-            import time as _t
-
-            while not self._closed:
-                try:
-                    self.remote_conductor.poll_for_armed()
-                except Exception:
-                    pass
-                _t.sleep(0.35)
-
-        t = threading.Thread(target=watch, name="chrono-window-watch", daemon=True)
-        t.start()
+        remote = self.remote_conductor
+        if remote is None:
+            # Display-client only.  A hosted window learns about arming through
+            # Conductor.on_armed and must not poll itself.
+            return
+        remote.watch_in_background()
 
     def raise_window(self) -> bool:
         """Bring the window to the front (used when a cue is armed)."""
@@ -704,6 +625,16 @@ class CueWindow:
         _set_foreground(self.window)
         return True
 
+    def _on_armed_raise(self, _run: Any = None) -> None:
+        """Bring the widget back when a cue is armed (both hosting modes).
+
+        ``-> None`` is what ``on_armed`` asks for: the return value is
+        discarded, so forwarding ``raise_window()``'s bool would misdescribe
+        the callback.  A missed cue must be impossible to miss, hence both
+        hosting modes subscribe to this same function.
+        """
+        self.raise_window()
+
     def run(self, on_ready: Any = None, auto_cue: dict | None = None) -> int:
         """Open the window and block until it closes.
 
@@ -713,8 +644,8 @@ class CueWindow:
         """
         try:
             import webview  # noqa: PLC0415
-        except Exception:
-            return self._run_browser_fallback()
+        except Exception as exc:
+            return self._run_browser_fallback(f"{type(exc).__name__}: {exc}")
 
         s = self.panel.settings
         self.conductor.start()
@@ -736,7 +667,7 @@ class CueWindow:
                 # drives the drag through begin_drag/update_drag instead.
                 easy_drag=False,
                 on_top=bool(s.always_on_top),
-                min_size=(320, 380),
+                min_size=(MIN_LOGIC_W, MIN_LOGIC_H),
                 # Transparency is what lets the DWM acrylic backdrop show through.
                 # It requires a frameless window (pywebview's transparent path
                 # only applies there), which is fine: the page paints its own
@@ -798,11 +729,17 @@ class CueWindow:
                 # The hosted case was missed at first, which meant that once the
                 # operator minimised the widget, an agent-armed cue beeped at an
                 # empty desk.
+                # NOTE: ``self.conductor`` is never None -- __init__ falls back to
+                # a fresh Conductor -- so this is an if/else, not an
+                # ``elif ... is not None``.  Spelling it as a comparison was worse
+                # than redundant: the negative branch narrowed the attribute to
+                # None for the rest of ``_boot``, turning a guaranteed-non-None
+                # value into an Optional and hiding real mistakes.
                 if self.remote_conductor is not None:
-                    self.remote_conductor.on_armed(lambda _run: self.raise_window())
+                    self.remote_conductor.on_armed(self._on_armed_raise)
                     self._start_remote_watch()
-                elif self.conductor is not None:
-                    self.conductor.on_armed(lambda _run: self.raise_window())
+                else:
+                    self.conductor.on_armed(self._on_armed_raise)
                 if self._start_hidden:
                     # Show once so the human learns where the widget lives.
                     threading.Thread(target=self._flash_visible, daemon=True).start()
@@ -836,15 +773,32 @@ class CueWindow:
                 except Exception:
                     pass
 
-    def _run_browser_fallback(self) -> int:
-        """No pywebview: degrade to a browser tab rather than failing."""
-        import sys
+    def _run_browser_fallback(self, reason: str = "") -> int:
+        """No usable native backend: degrade to a browser tab, LOUDLY.
 
+        Degrading is correct -- a cue panel that refuses to open is worse than
+        a cue panel in a tab.  Degrading *silently* is not: it is how a user
+        ends up believing the project is a web app (and how a missing native
+        window gets mistaken for a rendering bug).  So the downgrade is
+        announced on every channel available: stderr, the panel itself, and
+        ``chrono doctor``.
+        """
+        detail = f" ({reason})" if reason else ""
         print(
-            "chrono-handoff: pywebview is not installed, so the panel opens as a browser tab.\n"
-            "  For a real always-on-top window:  pip install pywebview",
+            f"chrono-handoff: no native window backend{detail} -- opening a browser tab instead.\n"
+            "  A tab cannot go always-on-top and has browser chrome stealing the space\n"
+            "  the countdown needs.  For the real widget:\n"
+            f"      {sys.executable} -m pip install pywebview\n"
+            "  (this interpreter is the one that must have it -- check with "
+            "chrono doctor, which reports the panel backend)",
             file=sys.stderr,
+            flush=True,
         )
+        # Surface it in the UI too: the window is often spawned detached, where
+        # stderr is a log file nobody reads, and the operator has no idea why
+        # the widget looks like a web page.  Short and action-free on purpose --
+        # an exception repr belongs in stderr, not in front of the operator.
+        self.panel.degraded_reason = "以浏览器标签页运行：缺少 pywebview，无法置顶、无边框"
         self.conductor.start()
         self.panel.open_browser(self.browser_url)
         try:

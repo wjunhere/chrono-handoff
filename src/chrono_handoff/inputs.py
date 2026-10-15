@@ -224,7 +224,10 @@ class HttpSource:
         class _Handler(BaseHTTPRequestHandler):
             protocol_version = "HTTP/1.1"
 
-            def log_message(self, *_a: Any) -> None:  # silence the default stderr spam
+            # Signature must match BaseHTTPRequestHandler.log_message(self,
+            # format, *args) -- a bare ``*_a`` override is not compatible with it.
+            # Silence the default per-request stderr spam.
+            def log_message(self, format: str, *args: Any) -> None:  # noqa: A002
                 return
 
             def _respond(self, code: int, body: bytes, ctype: str = "application/json") -> None:

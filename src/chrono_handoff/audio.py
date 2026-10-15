@@ -363,9 +363,16 @@ class CommandAudio:
     precision = APPROX
 
     def __init__(self, samples: dict[str, tuple[float, float]] | None = None) -> None:
-        self._cmds: dict[str, list[str]] = {}
+        #: One rendered WAV path per cue key.  Values are ``str``, mirroring
+        #: WinsoundAudio._paths -- they used to be one-element *lists*, so
+        #: ``[*self._cmd, path]`` just below nested a list inside argv.  Popen
+        #: then raised TypeError, the ``except`` in play() swallowed it, and this
+        #: backend played **silence** while ``chrono doctor`` reported it as the
+        #: active one: exactly the silent degradation the module docstring
+        #: forbids.  Nothing caught it because e2e_audio.py never exercised cmd.
+        self._cmds: dict[str, str] = {}
         for key, (freq, dur) in (samples or SAMPLES).items():
-            self._cmds[key] = [_ensure_wav(key, freq, dur)]
+            self._cmds[key] = _ensure_wav(key, freq, dur)
         self._fallback = self._cmds.get("tick")
         self._cmd = self._pick_player()
         self._procs: list[subprocess.Popen] = []

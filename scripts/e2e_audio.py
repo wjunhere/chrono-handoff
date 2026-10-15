@@ -207,6 +207,26 @@ def test_selection() -> None:
     print(f"       external player for {sys.platform}: {players or 'none found'}")
     check("external-player lookup does not raise", isinstance(players, list))
 
+    # The cmd backend is the last resort and graded APPROX -- but "approximate"
+    # must not mean "silent".  It used to build argv as [*player, [wav_path]],
+    # a nested list, so Popen raised TypeError; play()'s bare ``except`` swallowed
+    # it and doctor still reported cmd as the active backend.  Nothing caught it
+    # because this file never constructed a CommandAudio.  Assert the observable
+    # effect -- a spawned process -- rather than trusting the call to have worked.
+    print("\n-- cmd backend: play() must actually spawn a player --")
+    if not players:
+        print("  [SKIP] no external player on PATH for this platform")
+    else:
+        cmd = CommandAudio()
+        check("cmd: every cue maps to a single path",
+              all(isinstance(p, str) for p in cmd._cmds.values()),
+              f"keys={sorted(cmd._cmds)}")
+        cmd.play("tick")
+        time.sleep(0.3)
+        check("cmd: play() spawned a process (argv is not nested)",
+              len(cmd._procs) > 0, f"{len(cmd._procs)} process(es) alive")
+        cmd.close()
+
 
 # ---------------------------------------------------------------------------
 # 4. device-level: the non-blocking invariant
@@ -265,7 +285,7 @@ def test_conductor(sink_label: str, factory) -> None:
         offs = [abs(e.detail.get("scheduled_offset_ms", 0.0)) for e in ev]
         med = statistics.median(offs) if offs else float("nan")
         check(f"{sink_label}: drives a real cue grid", len(offs) >= 10, f"{len(offs)} beats")
-        check(f"{sink_label}: beat landing sub-millisecond", offs and med < 1.0,
+        check(f"{sink_label}: beat landing sub-millisecond", bool(offs) and med < 1.0,
               f"median={med:.3f}ms max={max(offs) if offs else float('nan'):.3f}ms")
         ur = getattr(sink, "underruns", None)
         if ur is not None:

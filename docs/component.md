@@ -74,7 +74,7 @@ python -m chrono_handoff.cli window --paused        # 等你按 Start
 ### 1. 一次性 demo（浏览器标签页）
 
 ```bash
-cd path/to/chrono-handoff && export PYTHONPATH=src
+cd <repo> && export PYTHONPATH=src
 
 python -m chrono_handoff.cli demo --paused
 ```
@@ -162,6 +162,33 @@ chrono_cue(
 ```
 
 面板底部那张表是**给人看的**：能一眼确认时钟对齐是否正常、机器侧调度是否正常。这些数字全部是实测值，不是装饰。
+
+### 3.1 导轨的宽度：一个曾把整张卡片挤破的坑
+
+导轨一格一拍，所以它的**自然宽度随拍数无限增长**（20 s 前导 @ 500 ms 默认拍 = 40 拍，加上把 GO 居中所需的补位就是 81 格）。而格子的 `min-width` 和 `gap` 都不会缩：81 格需要 611 px，而卡片里只有约 390 px。
+
+两层问题，缺一不可：
+
+| 层 | 问题 | 修法 |
+|---|---|---|
+| 卡片 | `.panel` 是 grid 而没写 `grid-template-columns`，隐含列的 `auto` 最小值 = 最宽子项的 min-content（即导轨）。于是列变成 614 px，**每一个子项都继承了它**，而卡片仍是 439 px 并直接裁掉——GO 按钮和所有右对齐的数字一起消失 | `grid-template-columns:minmax(0,1fr)`（行的防护早就有了） |
+| 导轨 | 即使列被限住，导轨自己的内容还是放不下，尾部被剪——更糟的是 GO 可能被推到屏外，而 **GO 是一个位置**，操作者得在整个倒计时里找得到它 | `fitRail()`：按可用宽度和格数算 `gap`，必要时连格子宽度也让步（下限 1 px） |
+
+两条都实测过：**只留任一条，外壳渲染就是对的**；这就是为什么两条都留（列那条是结构性的，防的是以后任何人往 `.panel` 里塞一个宽东西）。
+
+两个测量上的经验，值得写下来：
+
+- **`documentElement.scrollWidth` 抓不到这个 bug。** 文档从来不溢出（`body.scrollWidth` 始终是对的），溢出发生在卡片内部。
+- **`#grid` 的 `scrollWidth` 也抓不到。** 它 `overflow:visible`，对这种元素 `scrollWidth` 只是回显 `clientWidth`——基于它的断言永远不可能失败。真正能测的是**格子落在哪里**：最后一格的 right 边对比轨道的 right 边。
+- 连 `.stage` 的 `scrollWidth` 都不够稳：同一份坏代码在外壳里报 630/439（抓得到），在 pywebview 里却报 439/439（抓不到）。所以 `scripts/e2e_ui_layout.py` 现在直接量格子位置，并在**外壳**那份 e2e 里另外断言页面没有发过“卡片在被裁剪”的告警——那才是出问题最严重的地方。
+
+不确定界面到底长什么样的时候，直接截一张看：
+
+```bash
+python scripts/_shot_window.py chrono-handoff
+```
+
+默认落在 `logs/shots/`（gitignored）。细节与三个坑见 `docs/desktop-shell.md` §五。
 
 ---
 

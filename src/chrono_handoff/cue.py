@@ -14,6 +14,7 @@ grid is fatal.
 
 from __future__ import annotations
 
+import io
 import queue
 import sys
 import threading

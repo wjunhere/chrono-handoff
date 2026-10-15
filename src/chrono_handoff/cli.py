@@ -33,6 +33,8 @@ from .cue import BellAudio, NullAudio, default_audio, describe_audio
 from .inputs import DEFAULT_KEY_LATENCY_S, analyse_offsets, make_source
 from .mcp_server import DEFAULT_HOST, DEFAULT_IPC_PORT, ConductorClient, ConductorServer
 from .model import CuePlan, SignalSpec, WindowSpec
+from .shell import ShellRecord
+from .shell import record_path as shell_record_path
 
 # --------------------------------------------------------------------------
 # helpers
@@ -74,6 +76,13 @@ def cmd_doctor(args: argparse.Namespace) -> int:
     two failure modes that silently ruin measurements: no audio sink, and no
     console (a detached daemon cannot read keystrokes)."""
     rows: list[tuple[str, str, str]] = []
+    #: Things that are actually wrong, collected explicitly.
+    #:
+    #: The exit code used to be `all("NO" not in value)`, i.e. a substring
+    #: search over *rendered* text -- so a user whose home directory contained
+    #: "NO" (``C:\Users\NOAH``) made `doctor` report a broken machine.  A
+    #: diagnostic that can be fooled by a path is not a diagnostic.
+    problems: list[str] = []
 
     # console
     try:
@@ -82,9 +91,15 @@ def cmd_doctor(args: argparse.Namespace) -> int:
 
         has_console = bool(ctypes.windll.kernel32.GetConsoleWindow())
         rows.append(("console", "yes" if has_console else "NO", "keystroke capture needs a console (msvcrt)"))
+        if not has_console:
+            problems.append(
+                "no console: keystroke capture will not work -- start the conductor with "
+                "`chrono daemon --background` (it gets its own console)"
+            )
         rows.append(("msvcrt.kbhit", "yes" if hasattr(msvcrt, "kbhit") else "NO", "mechanism-level key timestamp"))
     except Exception as exc:
         rows.append(("console", "NO", f"{type(exc).__name__}: {exc}"))
+        problems.append(f"console unavailable ({type(exc).__name__}: {exc})")
 
     # audio
     sink = default_audio("auto")
@@ -159,6 +174,52 @@ def cmd_doctor(args: argparse.Namespace) -> int:
     except Exception:
         rows.append(("mcp sdk", "not installed", "pip install 'chrono-handoff[mcp]'"))
 
+    # panel window
+    #
+    # Two different things can be on screen, and they are NOT alternatives to
+    # each other: the Tauri shell owns its own window and talks to the conductor
+    # over HTTP, while `chrono window` would host a pywebview window in its own
+    # process. What the user wants from doctor is the one that is actually
+    # running, so the live shell wins when there is one.
+    shell_rec = None
+    try:
+        shell_rec = ShellRecord.load()
+    except (OSError, ValueError, KeyError) as exc:
+        # Reporting, not swallowing: an unreadable record is a finding.
+        rows.append(("desktop shell", "UNREADABLE", f"{shell_record_path()}: {exc}"))
+        problems.append(f"shell record at {shell_record_path()} is unreadable: {exc}")
+    if shell_rec is not None and shell_rec.alive:
+        rows.append(("panel window", f"{shell_rec.backend} shell", shell_rec.describe()))
+    elif shell_rec is not None:
+        rows.append((
+            "desktop shell",
+            "stale record",
+            f"pid {shell_rec.pid} is gone ({shell_rec.exe}); window not running",
+        ))
+
+    # pywebview, i.e. what `chrono window` would use.  Checked even when the
+    # shell is up, so a checkout with a broken pywebview still says so.
+    #
+    # This was missing, and its absence is why a missing pywebview went
+    # unnoticed: `chrono window` silently degrades to a browser tab, so the user
+    # sees a web page and concludes the project is a web app.  The check has to
+    # name the INTERPRETER too, because the usual cause is running a different
+    # Python than the one the dependencies were installed into.
+    try:
+        import webview  # noqa: F401, PLC0415
+
+        rows.append((
+            "pywebview window",
+            "native",
+            f"`chrono window` can open a native window  [{sys.executable}]",
+        ))
+    except Exception as exc:
+        rows.append((
+            "pywebview window",
+            "browser tab",
+            f"pywebview missing ({type(exc).__name__}) -> install into {sys.executable}",
+        ))
+
     # daemon
     client = _client(args)
     healthy = client.healthy()
@@ -180,7 +241,13 @@ def cmd_doctor(args: argparse.Namespace) -> int:
     print(f"chrono-handoff {__version__} -- environment")
     for name, value, note in rows:
         print(f"  {name:<{width}}  {value:<34} {note}")
-    return 0 if all("NO" not in r[1] for r in rows) else 1
+    if problems:
+        print()
+        print(f"{len(problems)} problem(s):")
+        for p in problems:
+            print(f"  - {p}")
+        return 1
+    return 0
 
 
 # --------------------------------------------------------------------------
@@ -738,7 +805,13 @@ def cmd_demo(args: argparse.Namespace) -> int:
     conductor.start()
     panel = CuePanel(conductor, host=args.host, port=args.panel_port, auto_open=False)
     panel.bind()
-    conductor.on_panel_open(lambda _rid: panel.open_browser())
+
+    # on_panel_open's contract is ``-> None``; open_browser() returns a bool, so
+    # it is forwarded through an explicit void callback.
+    def _open_panel(_rid: str) -> None:
+        panel.open_browser()
+
+    conductor.on_panel_open(_open_panel)
 
     if not args.no_open:
         # Raise the panel BEFORE the first cue.  A panel that opens when the
@@ -776,58 +849,9 @@ def cmd_demo(args: argparse.Namespace) -> int:
     return 0
 
 
-class _RemoteConductor:
-    """Panel-side view of a conductor living in the daemon process.
-
-    The panel must not own a second clock: two conductors would each schedule
-    their own copy of the cue and the human would hear it twice.  So the panel
-    is a *display* that reads schedule/status from the daemon over IPC, and the
-    daemon stays the single clock authority.
-    """
-
-    def __init__(self, client: ConductorClient) -> None:
-        self._c = client
-        self._armed: list = []
-
-    def on_armed(self, fn):
-        self._armed.append(fn)
-
-    def schedule_payload(self, run_id):
-        return self._c.call("schedule", run_id=run_id)
-
-    def status(self, run_id, include_events=False):
-        return self._c.call("status", run_id=run_id, include_events=include_events)
-
-    def get(self, run_id):
-        try:
-            return self._c.call("status", run_id=run_id)
-        except Exception:
-            return None
-
-    def events(self, run_id, since_seq=0):
-        raw = self._c.call("observe", run_id=run_id, since_seq=since_seq)["events"]
-        from .model import Event
-
-        return [Event.from_json(json.dumps(e)) for e in raw]
-
-    def inject(self, run_id, payload="signal", **kw):
-        params = {"run_id": run_id, "payload": payload}
-        if kw.get("wall_t") is not None:
-            params["wall_t"] = kw["wall_t"]
-        return self._c.call("press", **params)
-
-    def go(self, run_id, in_s=0.0):
-        return self._c.call("go", run_id=run_id, in_s=in_s)
-
-    def cancel(self, run_id, reason="panel_cancel"):
-        return self._c.call("cancel", run_id=run_id, reason=reason)
-
-    def stats(self):
-        return self._c.call("list")["stats"]
-
-
 def cmd_panel(args: argparse.Namespace) -> int:
     """Run a cue panel attached to an already-running daemon."""
+    from .remote import RemoteConductor
     from .webui import CuePanel
 
     client = _client(args)
@@ -837,14 +861,24 @@ def cmd_panel(args: argparse.Namespace) -> int:
             file=sys.stderr,
         )
         return 1
-    panel = CuePanel(_RemoteConductor(client), host=args.host, port=args.panel_port, auto_open=not args.no_open)
+    # NOTE: this used to build a private _RemoteConductor defined in this file,
+    # a stale duplicate of remote.RemoteConductor.  It was missing
+    # clock_sync_payload, calibration and note_panel_press (so /api/clock,
+    # /api/calibration and /api/press all returned 500), its get() returned a raw
+    # dict instead of a run object (AttributeError on .plan), and its on_armed
+    # could never fire because nothing polled the daemon -- so the page never
+    # learned a cue had been armed.  Use the real one.
+    remote = RemoteConductor(client)
+    panel = CuePanel(remote, host=args.host, port=args.panel_port, auto_open=not args.no_open)
     panel.bind()
+    stop_watch = remote.watch_in_background()
     print(f"cue panel: {panel.url}   (attached to conductor at {client.host}:{client.port})")
     try:
         panel.serve_forever()
     except KeyboardInterrupt:
         pass
     finally:
+        stop_watch()
         panel.stop()
     return 0
 

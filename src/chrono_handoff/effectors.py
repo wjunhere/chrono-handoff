@@ -43,10 +43,12 @@ class Effector(Protocol):
     def arm(self, action: dict[str, Any]) -> None:
         """Prepare before the deadline (open the port, preload the payload).
         Called outside any timing-critical path."""
+        ...
 
     def fire(self, action: dict[str, Any], index: int) -> str:
         """Execute.  MUST be fast and non-blocking; returns a short detail
         string for the journal."""
+        ...
 
     def close(self) -> None: ...
 

@@ -70,6 +70,7 @@ def main() -> int:
             OUT["titlebar_display"] = js("getComputedStyle(document.getElementById('titlebar')).display")
             OUT["settings_overlay"] = js("!!document.getElementById('settings')")
             OUT["bridge_available"] = js("!!(window.pywebview && window.pywebview.api)")
+            OUT["shell_backend"] = js("shellBackend()")
             # the liveness poller depends on both of these
             OUT["liveness_wired"] = js("typeof pollHealth === 'function'")
             # evaluate_js does NOT await: an async IIFE hands back a promise and
@@ -80,16 +81,31 @@ def main() -> int:
                " catch (e) { window.__h = false; } })();")
             time.sleep(0.7)
             OUT["health_endpoint_ok"] = js("window.__h")
-            OUT["cfg_via_bridge"] = js("!!CFG")
+            OUT["cfg_loaded"] = js("!!CFG")
             OUT["form_value"] = js("document.getElementById('s-ioi').value")
 
-            # await a bridge call the way the page does
-            js("window.__t = null;"
-               "(async () => { window.__t = await window.pywebview.api.save_settings("
-               "{ioi_ms: 350, tail_beats: 5}); })();")
-            time.sleep(0.8)
-            OUT["awaited_ioi"] = js("window.__t && window.__t.settings && window.__t.settings.ioi_ms")
+            # Settings must travel over HTTP now, not the seam.  Counting POSTs
+            # to /api/settings while driving the page's OWN save path is a direct
+            # proof -- unlike deleting the bridge keys, which a proxy object may
+            # silently ignore, so the test would pass without proving anything.
+            js("window.__posts = 0;"
+               "window.__saved = null;"
+               "const _fetch = window.fetch;"
+               "window.fetch = function (u, o) {"
+               "  if (String(u) === '/api/settings' && o && o.method === 'POST') window.__posts++;"
+               "  return _fetch.apply(this, arguments); };"
+               "document.getElementById('s-ioi').value = '350';"
+               "document.getElementById('s-opacity').value = '0.71';"
+               "saveSettings().then(() => { window.__saved = true; })"
+               "              .catch(e => { window.__saved = 'ERR:' + e; });")
+            time.sleep(1.0)
+            OUT["save_resolved"] = js("window.__saved")
+            OUT["settings_posts"] = js("window.__posts")
             OUT["disk_ioi"] = Settings.load(settings_path).ioi_ms
+            # The POST is handled on the HTTP server thread, so this also proves
+            # CuePanel.window_hooks reaches the OS window from off the UI thread.
+            OUT["disk_opacity"] = Settings.load(settings_path).opacity
+            OUT["win_alpha_var"] = js("document.documentElement.style.getPropertyValue('--win-alpha')")
 
             # settings open/close, and the title bar must stay usable (a
             # frameless window whose chrome is covered cannot be moved/closed)
@@ -117,6 +133,7 @@ def main() -> int:
                " Math.max(0, S.zeroMs - (performance.timeOrigin + performance.now()) + 40));")
             time.sleep(2.8)
             r = w.conductor.get(run["run_id"])
+            assert r is not None, "the conductor lost a run it had just armed"
             OUT["press_offset_ms"] = None if r.human_offset_ms is None else round(r.human_offset_ms, 1)
             OUT["press_seen"] = r.signal_seen
             OUT["ui_result"] = js("document.getElementById('m-result').textContent")
@@ -144,19 +161,27 @@ def main() -> int:
     check("custom title bar is visible", OUT.get("titlebar_display") == "flex", f"display={OUT.get('titlebar_display')}")
     check("settings overlay exists", OUT.get("settings_overlay") is True)
     check("JS bridge available", OUT.get("bridge_available") is True)
+    check("shell seam resolves to pywebview", OUT.get("shell_backend") == "pywebview",
+          f"backend={OUT.get('shell_backend')!r}")
     check("liveness poller installed", OUT.get("liveness_wired") is True)
     check("liveness endpoint reachable", OUT.get("health_endpoint_ok") is True)
-    check("settings loaded via bridge", OUT.get("cfg_via_bridge") is True)
+    check("settings loaded over HTTP", OUT.get("cfg_loaded") is True)
     check("settings form pre-filled", OUT.get("form_value") not in (None, ""), f"ioi={OUT.get('form_value')}")
-    check("bridge save is awaitable", OUT.get("awaited_ioi") == 350, f"awaited ioi={OUT.get('awaited_ioi')}")
+    check("save path resolved", OUT.get("save_resolved") is True, f"result={OUT.get('save_resolved')!r}")
+    check("save went over HTTP (1 POST /api/settings)", OUT.get("settings_posts") == 1,
+          f"posts={OUT.get('settings_posts')}")
     check("settings persisted to disk", OUT.get("disk_ioi") == 350.0, f"on-disk ioi={OUT.get('disk_ioi')}")
+    check("window_hooks ran: opacity applied to the window from the HTTP thread",
+          OUT.get("win_alpha_var") == "0.71" and OUT.get("disk_opacity") == 0.71,
+          f"--win-alpha={OUT.get('win_alpha_var')!r} disk={OUT.get('disk_opacity')!r}")
     check("settings overlay opens", OUT.get("overlay_opens") is True)
     check("title bar usable while settings open", OUT.get("titlebar_usable_while_open") is True)
     check("settings overlay closes", OUT.get("overlay_closes") is True)
     check("schedule reaches the page", OUT.get("page_has_schedule") is True, f"{OUT.get('page_beats')} beats")
     off = OUT.get("press_offset_ms")
     check("press recorded near GO+40ms", isinstance(off, (int, float)) and 0 < off < 150, f"offset={off}ms")
-    check("press shown in the UI", OUT.get("ui_result") not in ("—", None), f"field={OUT.get('ui_result')!r}")
+    check("press shown in the UI", OUT.get("ui_result") not in ("—", "--", None, ""),
+          f"field={OUT.get('ui_result')!r}")
     check("tail kept pulsing after press", (OUT.get("tail_after_response") or 0) >= 3,
           f"{OUT.get('tail_after_response')} beats after response")
     if OUT.get("error"):

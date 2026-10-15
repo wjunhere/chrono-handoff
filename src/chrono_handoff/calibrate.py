@@ -34,15 +34,13 @@ from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Any, Iterable
 
+from .home import chrono_home
 from .inputs import DEFAULT_KEY_LATENCY_S
 from .model import mad, median
 
 
 def default_store_path() -> Path:
-    env = os.environ.get("CHRONO_HOME")
-    base = Path(env) if env else Path.home() / ".chrono-handoff"
-    base.mkdir(parents=True, exist_ok=True)
-    return base / "calibration.json"
+    return chrono_home() / "calibration.json"
 
 
 @dataclass

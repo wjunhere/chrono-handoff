@@ -1,0 +1,64 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1024" height="1024" viewBox="0 0 1024 1024">
+  <!--
+    chrono-handoff app icon.
+
+    The motif is the panel's own rail: one pill per beat, the GO beat pinned to
+    the centre and the only thing allowed to shout.  Cell heights and the
+    fill/outline difference are not decoration.  They carry the same meaning the
+    live rail does:
+
+      past   (left, before GO)   filled, dim         = spent
+      GO     (centre)            solid amber, tall   = the moment
+      tail   (right, after GO)   outlined, short     = sustain, held back
+
+    Proportions are NOT a 1:1 copy of the runtime rail.  There the resting cells
+    are 24% of the rail's height and the tail is a 1px hairline; at 16x16 that is
+    sub-pixel mush.  Here the height steps are exaggerated and the tail stroke is
+    thick enough to survive, so the mark still reads as "a rail with its target
+    lit" at 16 px while staying honest about what the rail means.
+
+    Colours are the panel's own CSS variables: bg #0b0d11, fg #f4f4f6,
+    accent #ffc247.
+
+    Regenerate every platform's icons from this file (it is the single source:
+    the desktop shell's .ico/.icns and the page's favicon are the same mark, so
+    they cannot drift):
+
+      cd desktop && npx tauri icon ../src/chrono_handoff/statics/icon.svg -o src-tauri/icons
+
+    Geometry, kept in one place so the cells stay evenly spaced: every cell has
+    an OUTER box of 92 wide on a 150 pitch, vertically centred on y = 512.  An
+    outlined cell is drawn as a 30 unit stroke, so its path box is 30 smaller on
+    each axis and offset by half the stroke.  Without that correction the stroked
+    cells sit on a different pitch than the filled ones, which is exactly what
+    the first draft did.
+  -->
+  <rect x="64" y="64" width="896" height="896" rx="205" fill="#0b0d11"/>
+  <rect x="67" y="67" width="890" height="890" rx="202" fill="none"
+        stroke="#f4f4f6" stroke-opacity="0.13" stroke-width="6"/>
+
+  <!-- centres: 168, 340, 512, 684, 856 -->
+  <!--
+    All five are FILLED.  An earlier draft drew the tail cells as thick
+    outlines, the way the live rail does (tail is a hairline box there).  At
+    icon scale a fat stroked rounded rect stops reading as a cell and starts
+    reading as a glyph: the two on the right came out looking like "0" and "o".
+    Brightness and height carry the past/tail difference instead, which survives
+    downscaling and cannot be mistaken for text.
+
+    The greys are brighter than the live rail's.  There the resting cells sit in
+    a big card at tablet distance; here they are 3 px of a 32 px icon, and at the
+    rail's own opacities they simply disappeared into the tile (tried: 0.26 and
+    0.34, then 0.34 and 0.42, both too faint at 32 px).  Exaggerating them is the
+    price of a mark that works at taskbar size.
+  -->
+  <!-- past: spent -->
+  <rect x="102" y="456" width="132" height="112" rx="56" fill="#f4f4f6" fill-opacity="0.5"/>
+  <rect x="274" y="386" width="132" height="252" rx="66" fill="#f4f4f6" fill-opacity="0.68"/>
+  <!-- GO: the moment, and the only colour in the mark -->
+  <rect x="446" y="292" width="132" height="440" rx="66" fill="#ffc247"/>
+  <!-- tail: sustaining, a step dimmer than the past side so the asymmetry stays
+       honest at large sizes without costing anything at small ones -->
+  <rect x="618" y="396" width="132" height="232" rx="66" fill="#f4f4f6" fill-opacity="0.6"/>
+  <rect x="790" y="458" width="132" height="108" rx="54" fill="#f4f4f6" fill-opacity="0.4"/>
+</svg>
