@@ -435,8 +435,23 @@ class ConductorServer:
             # The earlier explicit SO_EXCLUSIVEADDRUSE was not wrong, but it
             # made the socket refuse to bind while any connection to that port
             # was still draining, which turned a restartable daemon into one
-            # that needed a wait.  The default gives the same exclusivity
-            # without that cost.
+            # that needed a wait.  On Windows the default gives the same
+            # exclusivity without that cost (measured above).
+            #
+            # On POSIX it does NOT, and that was found the hard way: measured on
+            # Linux, running scripts/e2e_panel_attach.py twice in a row fails the
+            # second time with "[Errno 98] Address already in use" while `ss`
+            # shows nothing listening -- just a TIME-WAIT socket from the first
+            # run's own client connection.  Worse, bind() then concludes
+            # "the port is held by something that is not a chrono conductor" and
+            # sends the operator hunting for a process that does not exist.
+            #
+            # So POSIX gets the flag the comment above already said it wanted.
+            # It cannot be used to hijack: an actively listening socket still
+            # makes this bind fail with EADDRINUSE, which is the exclusivity that
+            # matters.  Windows deliberately does not get it (see above).
+            if sys.platform != "win32":
+                srv.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
             srv.bind((self.host, self.port))
         except OSError as exc:
             srv.close()
