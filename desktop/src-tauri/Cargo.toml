@@ -1,0 +1,38 @@
+[package]
+name = "chrono-handoff"
+version = "0.1.0"
+description = "chrono-handoff desktop shell: owns the window, not the clock"
+authors = ["wjun"]
+edition = "2024"
+
+# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+
+[lib]
+# The `_lib` suffix may seem redundant but it is necessary
+# to make the lib name unique and wouldn't conflict with the bin name.
+# This seems to be only an issue on Windows, see https://github.com/rust-lang/cargo/issues/8519
+name = "chrono_handoff_lib"
+crate-type = ["staticlib", "cdylib", "rlib"]
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+tauri = { version = "2", features = [] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+window-vibrancy = "0.8.1"
+# Small blocking HTTP client, used for exactly one thing: reading and writing
+# the window's geometry through the conductor's settings API.  The shell talks
+# to the conductor the same way any other client does, so the panel process
+# stays the single writer of settings.json.
+ureq = { version = "3", features = ["json"] }
+
+
+# Read the optimization guideline for more details: https://tauri.app/concept/size/#cargo-configuration
+[profile.release]
+codegen-units = 1
+lto = true
+opt-level = 3
+panic = "abort"
+strip = true

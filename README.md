@@ -23,7 +23,7 @@ LLM 的单轮推理耗时（5–30 s）将完整地落在关键路径上，无�
 
 ### 要求
 
-- Python 3.10+
+- Python 3.10+（**建议 3.13+**：计时抖动更低，见安装说明）
 - 可选：`pywebview`（独立原生窗口）、`pyserial`（串口观测）
 
 ### 安装
@@ -31,9 +31,18 @@ LLM 的单轮推理耗时（5–30 s）将完整地落在关键路径上，无�
 ```bash
 git clone https://github.com/wjunhere/chrono-handoff.git
 cd chrono-handoff
-pip install -e ".[all]"     # 或 ".[mcp]" 仅装 MCP，见"安装选项"
-chrono selftest             # 机制自检，预期 10/10
+
+# 建议 3.13+：实测抖动更低，3.12 会让 selftest 间歇性失败（见 docs/agent-setup.md §一.0）
+uv venv .venv --python "$(uv python find 3.13)"
+uv pip install --python .venv/Scripts/python.exe -e ".[all]"
+
+.venv/Scripts/chrono selftest      # 机制自检，预期 10/10
 ```
+
+> 用独立环境，别装进全局解释器：**装和跑必须是同一个解释器**，否则原生窗口会
+> 降级成浏览器标签页。`chrono doctor` 的 `panel window` 行会核对这点，并在缺失时
+> 直接给出该装的解释器路径。
+> 没装 `uv` 就用自己的 conda：`conda create -n chrono python=3.13`。
 
 **安装选项**
 
@@ -96,6 +105,8 @@ chrono cancel reset-demo            # 中止
 ```
 
 MCP 服务端为瘦客户端，首次调用时自动拉起 daemon（`CHRONO_AUTOSTART=0` 可关闭）。
+自动拉起时的窗口形式由 `CHRONO_MCP_WINDOW` 控制：默认 `1` 显示窗口；
+`hidden` 启动隐藏、cue 触发时再浮出；`0` 完全不建窗（同时不建控制台，因此放弃键盘输入与提示音，适合无人值守/自动化）。
 完整步骤见 [`docs/agent-setup.md`](agent-setup.md)。
 
 ## 用法
@@ -200,14 +211,19 @@ src/chrono_handoff/
 
 ```bash
 chrono selftest                       # 核心机制，10 项
+basedpyright src scripts              # 静态检查，要求 0 error（standard 模式）
 python scripts/e2e_audio.py           # 音频后端：混音/选择/非阻塞不变量
 python scripts/e2e_panel.py           # 面板 HTTP 全链路
+python scripts/e2e_panel_attach.py    # 面板附加到 daemon（chrono panel）
 python scripts/e2e_window.py          # 原生窗口
 python scripts/e2e_ui_layout.py       # 布局几何
 python scripts/e2e_resize.py          # 窗口缩放
 python scripts/e2e_theme_drag.py      # 主题对比度与拖拽隔离
 python scripts/e2e_daemon_window.py   # 一体化模式
 python scripts/e2e_split_mode.py      # 分离模式
+python scripts/e2e_state_paths.py     # 用户状态落点（与 cwd 无关）
+python scripts/e2e_desktop_shell.py   # Tauri 桌面外壳（需先 cargo build）
+cd desktop/src-tauri && cargo test    # 外壳几何算式（边方向/夹紧/累计位移/窗口位置与恢复）
 ```
 
 ## 性能
@@ -248,6 +264,8 @@ Windows 11 / CPython 3.13，详见 [`docs/implementation-notes.md`](implementati
 | [`docs/component.md`](docs/component.md) | 提示组件使用与集成 |
 | [`docs/design.md`](docs/design.md) | 协议与接口设计 |
 | [`docs/implementation-notes.md`](docs/implementation-notes.md) | 实现细节与实测数据 |
+| [`docs/shell-contract.md`](docs/shell-contract.md) | 面板 ↔ 窗口宿主契约（换壳时唯一要改的地方） |
+| [`docs/desktop-shell.md`](docs/desktop-shell.md) | Tauri 2 桌面外壳：现状、阻塞点与两条出路 |
 | [`docs/m1.md`](docs/m1.md) | M1 测量实验方法 |
 | [`docs/theory.md`](docs/theory.md) | 理论依据（时间触发 / 人机节拍同步） |
 | [`docs/problem.md`](docs/problem.md) | 问题定义与量化 |

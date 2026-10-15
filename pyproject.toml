@@ -6,13 +6,21 @@ requires-python = ">=3.10"
 dependencies = []
 
 [project.optional-dependencies]
-mcp = ["mcp>=1.0"]
+# Floor is 1.2: `mcp.server.fastmcp` does not exist in 1.0.x/1.1.x, so the old
+# `>=1.0` let pip install a version this code could not import.  1.x imports
+# FastMCP, 2.x renamed it to MCPServer; build_mcp_server() handles both, so no
+# upper bound is needed.
+mcp = ["mcp>=1.2"]
 # Sample-accurate portable audio.  Optional: Windows uses the built-in
 # winsound path, and the panel uses Web Audio in the browser.
 audio = ["sounddevice>=0.4"]
 # Everything needed for the full experience on any platform.
-all = ["mcp>=1.0", "sounddevice>=0.4", "pywebview>=5.0", "pyserial>=3.5"]
-dev = ["pytest>=7"]
+all = ["mcp>=1.2", "sounddevice>=0.4", "pywebview>=5.0", "pyserial>=3.5"]
+# Building the desktop shell's bundled conductor (`chrono-core`).  PyInstaller
+# cannot cross-compile, so this runs once per target platform -- see
+# desktop/sidecar/build.py.
+sidecar = ["mcp>=1.2", "sounddevice>=0.4", "pyserial>=3.5", "pyinstaller>=6"]
+dev = ["pytest>=7", "pyinstaller>=6"]
 
 [project.scripts]
 chrono = "chrono_handoff.cli:main"
@@ -25,4 +33,25 @@ build-backend = "setuptools.build_meta"
 where = ["src"]
 
 [tool.setuptools.package-data]
-chrono_handoff = ["statics/*.wav"]
+# The UI is data files, so they have to be listed here or a wheel install ships a
+# package with no panel: `chrono window` then has nothing to show.  The previous
+# value was `["statics/*.wav"]` -- and there are no .wav files in statics at all,
+# so the glob matched nothing while the files that *were* needed (panel.html, the
+# fonts, the icon) were never listed.  Verified by building the wheel and listing
+# it: it contained no statics whatsoever.
+chrono_handoff = [
+    "statics/*.html",
+    "statics/*.svg",
+    "statics/*.wav",
+    "statics/fonts/*.woff2",
+]
+
+# Type checking for editors and `basedpyright`.  basedpyright's default is
+# "recommended", which is stricter than pyright's "standard" and flags the
+# dynamic-by-design parts of this codebase (57 bare `Any`, duck-typed
+# RemoteConductor, Protocol effectors) as ~1700 findings, drowning the real
+# ones.  "standard" keeps every finding that is about a wrong value or a wrong
+# use of a value, and drops the annotation-purity ones; it still catches
+# mcp_server.py's FastMCP import failure, which is the bar that matters here.
+[tool.basedpyright]
+typeCheckingMode = "standard"
