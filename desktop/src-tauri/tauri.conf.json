@@ -15,7 +15,14 @@
   },
   "plugins": {
     "updater": {
-      "pubkey": ""
+      "pubkey": "",
+      "endpoints": [
+        "https://github.com/wjunhere/chrono-handoff/releases/latest/download/latest.json"
+      ],
+      "requireSignedVersion": true,
+      "windows": {
+        "installMode": "passive"
+      }
     }
   },
   "bundle": {

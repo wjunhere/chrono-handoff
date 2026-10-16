@@ -48,16 +48,25 @@ sequenceDiagram
 签名校验是 Tauri 强制的、**不能关**：这个程序能往串口写字节，更新载荷就是远程代码。
 
 ```bash
-# 私钥永远不进仓库，也不进 CI secret（这台机器上一次 runner 被攻破就能给所有用户推代码）
-cargo tauri signer generate -w <仓库外的路径>/chrono-handoff.key
+# 私钥永远不进仓库（也不进 CI secret：runner 被攻破一次就能给所有用户推代码）
+npx tauri signer generate -w <仓库外的路径>/chrono-handoff.key
 
-# 公钥是公开的，编译进二进制：
-export CHRONO_UPDATE_PUBKEY="$(cat <仓库外的路径>/chrono-handoff.key.pub)"
+# 公钥是公开的，粘进 tauri.conf.json 的 plugins.updater.pubkey（那两行）
 ```
 
-`CHRONO_UPDATE_PUBKEY` 在**构建时**读进 `lib.rs` 的一个常量。它不能来自配置文件：一个能改配置的东西
-就能换掉的"签名"不是签名。没设这个变量时，构建**照常成功**，但更新功能处于 `unconfigured`
-——面板会这么说，概况也能从 `update_status` 读到，而不是给你一个看起来能用的按钮。
+公钥放 `tauri.conf.json` 而不是环境变量，有两个原因：配置文件是在**构建时**读进去、编译进二进制的
+（运行时可改的值就不叫签名了），而且多行的值在环境变量里很难传对（Windows 上尤其）。
+
+没填公钥时构建**照常成功**，但更新功能处于 `unconfigured`——面板会这么说，`update_status`
+也能读到，而不是给你一个看起来能用的按钮。
+
+配置里三个已经定好的开关：
+
+| 键 | 值 | 为什么 |
+|---|---|---|
+| `requireSignedVersion` | `true` | 清单本身**没有签名**，只走 TLS。谁能喂一个伪造响应，就能把虚高的版本号配上更早版本的 url + 签名，逼你降级到一个真实但过时的构建。开了它，签名里带的版本必须和清单一致 |
+| `windows.installMode` | `passive` | 有进度条、不需交互；`quiet` 没有反馈，窗口工具突然消失会让人以为崩了 |
+| `endpoints` | GitHub `releases/latest/download/latest.json` | 零服务器。Tauri 自己会替换 `{{target}}`/`{{arch}}` |
 
 产物（`createUpdaterArtifacts` **没有**在 `tauri.conf.json` 里打开，因为默认路径要能在没有私钥时
 照常出普通安装包）：

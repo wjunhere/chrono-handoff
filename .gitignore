@@ -39,6 +39,11 @@ Thumbs.db
 # --- 临时 -------------------------------------------------------------------
 *.tmp
 *.bak
+# Seatbelt, not a recommendation: the update signing key belongs *outside* the
+# repo (`npx tauri signer generate -w <path>`), but a private key that lands here
+# by accident would be a key anyone can push updates with, so don't let git offer
+# to commit it.  See docs/update.md.
+*.key
 # One-off scratch scripts the agent drops at the repo root.  Scoped to the
 # root on purpose: an unscoped `_*.py` also swallows real shared helpers such
 # as scripts/_wininput.py.

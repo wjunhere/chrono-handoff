@@ -1071,22 +1071,24 @@ fn report_fatal(msg: &str) {
 }
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
-/// The public half of the key that signs releases, compiled in on purpose.
+/// The public key the build was configured with, read from the compiled-in
+/// config (`tauri.conf.json` → `plugins.updater.pubkey`).
 ///
-/// It cannot come from a config file: a key that anything able to write a file
-/// could swap is not a signature, and this signature is the only thing between a
-/// remote server and a program that can write bytes to a serial port.  Tauri
-/// refuses to disable verification, so an empty value here means "this build
-/// cannot update", never "this build updates without checking".
-const UPDATE_PUBKEY: &str = match option_env!("CHRONO_UPDATE_PUBKEY") {
-    Some(k) => k,
-    None => "",
-};
-
-/// Where the update manifest lives: one static JSON per channel (see
-/// `docs/update.md`).  `{{target}}`/`{{arch}}` are Tauri's own substitutions.
-const UPDATE_ENDPOINT: &str =
-    "https://github.com/wjunhere/chrono-handoff/releases/latest/download/latest.json";
+/// It has to be compiled in: a key that anything able to write a file at *run*
+/// time could swap is not a signature, and this signature is the only thing
+/// between a remote server and a program that can write bytes to a serial port.
+/// The config file is read once, by the build, so it is the right home for it --
+/// and it is the right home for a *public* key, which is not a secret.
+fn configured_pubkey(app: &tauri::AppHandle) -> String {
+    app.config()
+        .plugins
+        .0
+        .get("updater")
+        .and_then(|u| u.get("pubkey"))
+        .and_then(|k| k.as_str())
+        .unwrap_or_default()
+        .to_string()
+}
 
 /// What the updater is doing, and the last thing that happened to it.
 ///
@@ -1113,8 +1115,9 @@ impl UpdateState {
             phase: "unconfigured".into(),
             detail: Some(
                 "this build has no update key compiled in, so it cannot update itself.\n\
-                 Generate one:  cargo tauri signer generate -w <path outside the repo>\n\
-                 Then build with CHRONO_UPDATE_PUBKEY set to its public half."
+                 Generate one:  npx tauri signer generate -w <path outside the repo>\n\
+                 Then paste its .key.pub into tauri.conf.json (plugins.updater.pubkey) \
+                 and rebuild -- see docs/update.md."
                     .into(),
             ),
             ..Default::default()
@@ -1165,13 +1168,10 @@ type UpdateHandle = std::sync::Arc<std::sync::Mutex<UpdateSlot>>;
 fn updater(app: &tauri::AppHandle) -> Option<tauri_plugin_updater::Updater> {
     use tauri_plugin_updater::UpdaterExt;
 
-    if UPDATE_PUBKEY.is_empty() {
+    if configured_pubkey(app).is_empty() {
         return None;
     }
     app.updater_builder()
-        .pubkey(UPDATE_PUBKEY)
-        .endpoints(vec![UPDATE_ENDPOINT.parse().ok()?])
-        .ok()?
         // Last chance to be polite: on Windows the plugin quits the app itself
         // once the installer is launched, and quitting with the conductor still
         // holding chrono-core.exe open is how an update fails halfway.
