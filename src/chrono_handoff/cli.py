@@ -24,7 +24,7 @@ import time
 from pathlib import Path
 from typing import Any, Callable
 
-from . import __version__
+from . import CONTRACT_VERSION, __version__
 from .calibrate import CalibrationStore, simulate_calibration
 from .clock import CLOCK, Scheduler, drift_report
 from .conductor import Conductor
@@ -231,11 +231,44 @@ def cmd_doctor(args: argparse.Namespace) -> int:
         try:
             st = client.call("ping")
             rows.append(("daemon stats", json.dumps({k: st.get(k) for k in ("runs", "active", "audio", "scheduler_firings")}), ""))
-        except Exception:
-            pass
+            got = st.get("contract")
+            if got != CONTRACT_VERSION:
+                # The two halves of an install can come from different builds --
+                # a leftover sidecar, a half-finished upgrade, a stale MSI.  Say
+                # which pair is on this machine, because "the UI is acting
+                # strangely" is the symptom and this is the cause.
+                rows.append((
+                    "daemon contract",
+                    f"{got} (this build speaks {CONTRACT_VERSION})",
+                    f"daemon is version {st.get('version')}; these are different builds",
+                ))
+                problems.append(
+                    f"the daemon speaks contract {got}, this build speaks {CONTRACT_VERSION} "
+                    f"(daemon version {st.get('version')}): the window and the conductor "
+                    "are from different builds -- reinstall so both come from one installer"
+                )
+        except Exception as exc:
+            # Not silent: `healthy()` already answered, so a failure here is news.
+            rows.append(("daemon stats", "unavailable", f"{type(exc).__name__}: {exc}"))
 
     cal = CalibrationStore()
     rows.append(("calibration", str(cal.path), f"{len(cal.all())} signature(s)"))
+    if cal.readonly_reason:
+        problems.append(cal.readonly_reason)
+
+    # State files carry a schema (see schema.py).  When one cannot be written,
+    # doctor is the place that says so: the panel can only say "could not save".
+    from .schema import SCHEMA
+    from .settings import Settings, default_settings_path
+
+    settings = Settings.load()
+    rows.append((
+        "settings",
+        str(default_settings_path()),
+        settings.readonly_reason or f"schema {SCHEMA}, writable",
+    ))
+    if settings.readonly_reason:
+        problems.append(settings.readonly_reason)
 
     if getattr(args, "json", False):
         # Machine-readable, so a build check can compare this app's capabilities
@@ -244,13 +277,14 @@ def cmd_doctor(args: argparse.Namespace) -> int:
         # whose encoding is the local ANSI codepage, not UTF-8.
         print(json.dumps({
             "version": __version__,
+            "contract": CONTRACT_VERSION,
             "rows": [{"name": n, "value": v, "note": d} for n, v, d in rows],
             "problems": problems,
         }))
         return 1 if problems else 0
 
     width = max(len(r[0]) for r in rows)
-    print(f"chrono-handoff {__version__} -- environment")
+    print(f"chrono-handoff {__version__} (contract {CONTRACT_VERSION}) -- environment")
     for name, value, note in rows:
         print(f"  {name:<{width}}  {value:<34} {note}")
     if problems:

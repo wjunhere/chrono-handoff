@@ -11,6 +11,7 @@ Run:  python scripts/e2e_panel.py
 from __future__ import annotations
 
 import json
+import re
 import sys
 import time
 import urllib.error
@@ -19,6 +20,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
+from chrono_handoff import CONTRACT_VERSION, __version__  # noqa: E402
 from chrono_handoff.conductor import Conductor  # noqa: E402
 from chrono_handoff.webui import CuePanel  # noqa: E402
 
@@ -244,7 +246,59 @@ def main() -> int:
                 f"median={audit['detail']['median_ms']}ms max={audit['detail']['max_ms']}ms",
             )
 
-        # ---- 10. the cue() convenience path ---------------------------
+        # ---- 10b. which build is this, and can it keep what it is told ---
+        #
+        # The page and the conductor are two halves that can come from different
+        # builds (stale files survive an upgrade -- docs/desktop-shell.md).  Both
+        # sides declare a contract and the page refuses to arm when they differ,
+        # so the declaration has to be present and the two have to agree.
+        health = get(base + "/api/health")
+        check(
+            "health declares which build is answering",
+            (health.get("version"), health.get("contract")) == (__version__, CONTRACT_VERSION),
+            f"version={health.get('version')} contract={health.get('contract')}",
+        )
+        check(
+            "health says the settings are writable",
+            health.get("writable") is True and not health.get("why_not_writable"),
+            repr(health.get("why_not_writable")),
+        )
+        declared = re.search(r"const PAGE_CONTRACT = (\d+);", html)
+        check(
+            "the served page speaks the contract of the conductor it talks to",
+            declared is not None and int(declared.group(1)) == health.get("contract"),
+            f"page={declared.group(1) if declared else 'absent'} conductor={health.get('contract')}",
+        )
+
+        # ---- 10c. a settings file from a newer build ---------------------
+        #
+        # The real thing over real HTTP: a file this build cannot read must be
+        # neither used as if it were understood nor written over.
+        newer = Path("logs/_e2e/settings-newer.json")
+        newer.parent.mkdir(parents=True, exist_ok=True)
+        newer.write_text(json.dumps({"schema": 99, "lead_s": 9.0}), encoding="utf-8")
+        ro = CuePanel(conductor, host="127.0.0.1", port=0, settings_path=newer)
+        ro.start_background()
+        robase = f"http://127.0.0.1:{ro.port}"
+        try:
+            h2 = get(robase + "/api/health")
+            check(
+                "a newer settings file is reported, not silently accepted",
+                h2.get("writable") is False and "schema 99" in (h2.get("why_not_writable") or ""),
+                str(h2.get("why_not_writable"))[:70],
+            )
+            before = newer.read_bytes()
+            code = 0
+            try:
+                post(robase + "/api/settings", {"lead_s": 1.0})
+            except urllib.error.HTTPError as exc:
+                code = exc.code
+            check("saving is refused with an error, not a quiet success", code == 500, f"HTTP {code}")
+            check("the newer file is left byte-identical", newer.read_bytes() == before)
+        finally:
+            ro.stop()
+
+        # ---- 11. the cue() convenience path ---------------------------
         r2 = conductor.cue("second cue", target_in_s=1.0, lead_s=0.4, ioi_ms=200, tail_beats=2,
                            expect_source="none", duration_s=5, open_panel=False)
         check("conductor.cue() arms and starts", r2["status"] == "running", f"{r2['run_id']}")

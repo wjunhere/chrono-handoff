@@ -29,6 +29,7 @@ import time
 from pathlib import Path
 from typing import Any
 
+from . import CONTRACT_VERSION, __version__
 from .calibrate import CalibrationStore, task_signature
 from .model import CuePlan, SignalSpec, WindowSpec
 
@@ -522,7 +523,13 @@ class ConductorServer:
         if method == "cue":
             return c.cue(**params)
         if method == "ping":
-            return {"pong": True, "pid": os.getpid(), **c.stats()}
+            # `ping` is the "who is answering" method on this channel, so it
+            # carries the same two fields `/api/health` does.  A client that acts
+            # on the reply (a CLI, an agent) can then tell a matching conductor
+            # from one bundled by a different build.
+            return {"pong": True, "pid": os.getpid(),
+                    "version": __version__, "contract": CONTRACT_VERSION,
+                    **c.stats()}
         if method == "submit":
             plan = plan_from_dict(dict(params.get("plan") or {}))
             run = c.submit(plan, paused=bool(params.get("paused", False)))

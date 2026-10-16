@@ -28,7 +28,6 @@ Estimation rules (all of them exist because the naive version misbehaves):
 from __future__ import annotations
 
 import json
-import os
 import tempfile
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
@@ -37,6 +36,7 @@ from typing import Any, Iterable
 from .home import chrono_home
 from .inputs import DEFAULT_KEY_LATENCY_S
 from .model import mad, median
+from .schema import SchemaMismatch, adopt, envelope, write_json
 
 
 def default_store_path() -> Path:
@@ -80,6 +80,10 @@ class CalibrationStore:
         self.max_step_ms = max_step_ms
         self.window = window
         self._items: dict[str, Calibration] = {}
+        #: Why `save` will refuse (empty = writable).  Set by `load` when the file
+        #: was written by a newer version: the readings in it are measurements of
+        #: a person's timing, so they are neither guessed at nor written over.
+        self.readonly_reason = ""
         self.load()
 
     # -- persistence -------------------------------------------------------
@@ -91,21 +95,20 @@ class CalibrationStore:
             raw = json.loads(self.path.read_text(encoding="utf-8"))
         except Exception:
             return
-        for key, d in (raw.get("items") or {}).items():
+        adopted = adopt(raw, path=self.path, name="calibration.json")
+        if adopted.refuse_write:
+            self.readonly_reason = adopted.reason
+            return
+        for key, d in (adopted.payload.get("items") or {}).items():
             try:
                 self._items[key] = Calibration(**d)
             except TypeError:
                 continue
 
     def save(self) -> None:
-        payload = {
-            "version": 1,
-            "items": {k: asdict(v) for k, v in self._items.items()},
-        }
-        self.path.parent.mkdir(parents=True, exist_ok=True)
-        tmp = self.path.with_suffix(".tmp")
-        tmp.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
-        os.replace(tmp, self.path)
+        if self.readonly_reason:
+            raise SchemaMismatch(self.readonly_reason)
+        write_json(self.path, envelope(items={k: asdict(v) for k, v in self._items.items()}))
 
     # -- api ---------------------------------------------------------------
 

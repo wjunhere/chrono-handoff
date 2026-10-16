@@ -26,6 +26,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import shutil
 import signal
 import socket
@@ -331,8 +332,10 @@ def _check_serves(built: Path, env: dict[str, str], findings: list[str]) -> None
         findings.append(f"could not shut the bundle down: 127.0.0.1:{ipc} is still listening")
 
 
-def _check_parity(srows: dict[str, str], frows: dict[str, str], findings: list[str]) -> None:
+def _check_parity(source: dict, frozen: dict, findings: list[str]) -> None:
     """The bundle must not be able to do less than the checkout it came from."""
+    srows = {r["name"]: r["value"] for r in source["rows"]}
+    frows = {r["name"]: r["value"] for r in frozen["rows"]}
     print(f"  {'capability':<12}{'source checkout':<22}bundle")
     for name in PARITY_ROWS:
         if name not in srows:
@@ -349,6 +352,83 @@ def _check_parity(srows: dict[str, str], frows: dict[str, str], findings: list[s
         findings.append("scheduler landing: the bundle never fired the clock")
     else:
         _line("", "scheduler landing", frows["scheduler landing"])
+
+    # The bundle must also *be* the same build as the checkout, not merely as
+    # capable as it: a conductor that reports a different contract is one a window
+    # would refuse to drive, and one that reports a different version is a stale
+    # frozen snapshot -- the failure mode `--no-build` exists to catch, and the
+    # one that makes the journal's own `version` field a lie.
+    for field, want in (("version", source.get("version")), ("contract", source.get("contract"))):
+        got = frozen.get(field)
+        _line("", field, f"{want} -> {got}{'   <-- differs' if got != want else ''}")
+        if got != want:
+            findings.append(
+                f"the bundle reports {field} {got!r}, the checkout it was built from reports "
+                f"{want!r}: it is a stale snapshot, so rebuild it (`build.py` -- the frozen app "
+                "is not updated by editing Python)"
+            )
+
+
+def _check_versions(findings: list[str]) -> None:
+    """One version and one contract, declared in every place that labels a half.
+
+    Not busywork: the shell stamps its own `CARGO_PKG_VERSION` into `shell.json`
+    and the conductor stamps `__version__` into every cue journal, so a pair
+    labelled with two different versions makes both records lie about which code
+    produced them -- and the page refuses to drive a conductor whose contract
+    differs, which turns a mislabeled build into a window that will not arm.
+    """
+    import chrono_handoff
+
+    version, contract = chrono_handoff.__version__, chrono_handoff.CONTRACT_VERSION
+    conf = json.loads((ROOT / "desktop/src-tauri/tauri.conf.json").read_text(encoding="utf-8"))
+    declared: list[tuple[str, str, str]] = [
+        ("tauri.conf.json", str(conf.get("version")), version),
+        ("Cargo.toml", _cargo_package_version((ROOT / "desktop/src-tauri/Cargo.toml")
+                                               .read_text(encoding="utf-8")), version),
+        ("panel.html", _declared(ROOT / "src/chrono_handoff/statics/panel.html",
+                                 r"const PAGE_CONTRACT = (\d+);"), str(contract)),
+        ("src-tauri/src/lib.rs", _declared(ROOT / "desktop/src-tauri/src/lib.rs",
+                                            r"const CONTRACT: u64 = (\d+);"), str(contract)),
+    ]
+    print(f"  {'label':<12}{'file':<22}declares (python says {version} / contract {contract})")
+    for name, got, want in declared:
+        ok = got == want
+        _line("", name, f"{got}{'' if ok else f'  <-- expected {want}'}")
+        if not ok:
+            findings.append(
+                f"{name} declares {got}, the Python package declares {want}: the two halves "
+                "of one install would be labelled differently"
+            )
+
+
+def _cargo_package_version(text: str) -> str:
+    """`version` from Cargo.toml's `[package]` section.
+
+    Walked line by line rather than matched with a regex, because every
+    dependency's `version = "..."` has exactly the same shape.
+    """
+    section = ""
+    for raw in text.splitlines():
+        line = raw.strip()
+        if line.startswith("["):
+            section = line
+        elif section == "[package]" and line.startswith("version"):
+            return line.split("=", 1)[1].strip().strip('"')
+    raise SystemExit("self-check: no version in Cargo.toml's [package] section")
+
+
+def _declared(path: Path, pattern: str) -> str:
+    """A constant read out of a source file, or a loud failure.
+
+    A regex that quietly stops matching would make this check pass by finding
+    nothing, which is the class of bug the check exists for -- so a miss is an
+    error naming what was looked for.
+    """
+    found = re.search(pattern, path.read_text(encoding="utf-8"))
+    if found is None:
+        raise SystemExit(f"self-check: {path.name} does not declare {pattern!r} any more")
+    return found.group(1)
 
 
 def _check_subsystem(built: Path, findings: list[str]) -> None:
@@ -381,12 +461,9 @@ def verify(built: Path) -> int:
     try:
         source = _doctor([sys.executable, "-m", "chrono_handoff.cli"], env)
         frozen = _doctor([str(built)], env)
-        _check_parity(
-            {r["name"]: r["value"] for r in source["rows"]},
-            {r["name"]: r["value"] for r in frozen["rows"]},
-            findings,
-        )
+        _check_parity(source, frozen, findings)
         _check_subsystem(built, findings)
+        _check_versions(findings)
         _check_selftest(built, env, findings)
         _check_serves(built, env, findings)
     finally:

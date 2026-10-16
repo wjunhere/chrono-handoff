@@ -8,4 +8,19 @@ measurable, calibratable latency offset.
 
 __version__ = "0.1.0"
 
-__all__ = ["__version__"]
+#: Version of the contract between parts that are shipped separately.
+#:
+#: ``__version__`` moves with every release; this moves only when the *meaning*
+#: of an interface does -- the host operations in ``docs/shell-contract.md``, or
+#: the conductor's HTTP API and IPC methods.  It exists because the two halves of
+#: one install can disagree: upgrade-time *stale files* are a measured behaviour
+#: (``docs/desktop-shell.md`` §升级 -- 0.1.0 -> 0.1.1 left the old files behind),
+#: so a window can end up talking to a conductor from a different build.  Every
+#: client that acts on an answer compares this first; without it, "which clock am
+#: I talking to" is a matter of luck and the symptom is a merely odd-looking UI.
+#:
+#: Declared in exactly two places -- ``/api/health`` (HTTP) and ``ping`` (IPC) --
+#: both from this constant.
+CONTRACT_VERSION = 1
+
+__all__ = ["CONTRACT_VERSION", "__version__"]

@@ -8,17 +8,22 @@ Kept deliberately tiny and human-editable.  Two rules encoded here:
 * **The UI and the conductor must agree on the numbers.**  The panel reads
   these to pre-fill its controls; the conductor reads them as the default plan.
   If they disagreed, the settings screen would be a lie.
+* **But a file written by a newer version is never overwritten** (see
+  ``schema.py``).  "Defaults rather than raising" is about *reading*; applied to
+  writing it would let a downgrade quietly delete every setting this build does
+  not recognise.  So an unreadable layout gives default numbers *and* a refusal
+  to save, and the panel says why.
 """
 
 from __future__ import annotations
 
 import json
-import os
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Any
 
 from .home import chrono_home
+from .schema import SchemaMismatch, adopt, envelope, write_json
 
 #: The smallest window the shells will allow, in logical pixels.  Below this the
 #: countdown stops being readable at arm's length, which is where it has to be
@@ -87,6 +92,17 @@ class Settings:
 
     extra: dict[str, Any] = field(default_factory=dict)
 
+    def __post_init__(self) -> None:
+        #: Why this file must not be written over (empty = writable).  Set by
+        #: `load` when the file on disk came from a newer version.
+        #:
+        #: Deliberately NOT a dataclass field: it describes the *file*, not the
+        #: settings, so it must not be serialized back, must not be settable by
+        #: a patch from the settings UI (`update` only accepts known fields), and
+        #: must not be loadable from the file itself.  Assigned here so every
+        #: instance has it ("Cannot assign to a ClassVar" taught this one).
+        self.readonly_reason: str = ""
+
     # -- persistence -------------------------------------------------------
 
     @classmethod
@@ -99,19 +115,26 @@ class Settings:
         except Exception:
             # A corrupt settings file must not be able to break a cue.
             return cls()
+        adopted = adopt(raw, path=p, name="settings.json")
+        if adopted.refuse_write:
+            # Same rule, extended to a layout this build cannot read: keep the
+            # clock usable, refuse to write.  Silently saving defaults over it
+            # is how a downgrade deletes a user's settings.
+            out = cls()
+            out.readonly_reason = adopted.reason
+            return out
         known = {f for f in cls.__dataclass_fields__}
-        kwargs = {k: v for k, v in raw.items() if k in known}
+        kwargs = {k: v for k, v in adopted.payload.items() if k in known}
         try:
             return cls(**kwargs)
         except Exception:
             return cls()
 
     def save(self, path: Path | str | None = None) -> Path:
+        if self.readonly_reason:
+            raise SchemaMismatch(self.readonly_reason)
         p = Path(path) if path else default_settings_path()
-        p.parent.mkdir(parents=True, exist_ok=True)
-        tmp = p.with_suffix(".tmp")
-        tmp.write_text(json.dumps(asdict(self), ensure_ascii=False, indent=2), encoding="utf-8")
-        os.replace(tmp, p)
+        write_json(p, envelope(**asdict(self)))
         return p
 
     def update(self, patch: dict[str, Any], path: Path | str | None = None) -> "Settings":
@@ -122,6 +145,11 @@ class Settings:
         a number belongs would produce a cue that runs at ``500`` seconds
         instead of 500 ms.
         """
+        if self.readonly_reason:
+            # Refuse rather than accept-and-forget: the caller (the panel) turns
+            # this into a visible message, which is the honest outcome when the
+            # file cannot be written.
+            raise SchemaMismatch(self.readonly_reason)
         for key, value in (patch or {}).items():
             if key not in self.__dataclass_fields__:
                 continue

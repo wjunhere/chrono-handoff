@@ -233,6 +233,51 @@ fn current_geometry(window: &tauri::WebviewWindow) -> Option<SavedGeometry> {
     })
 }
 
+/// The version of the conductor contract this shell speaks.
+///
+/// Must equal `CONTRACT_VERSION` in `chrono_handoff/__init__.py`; the sidecar
+/// build's self-check compares the frozen app's declaration against the source
+/// checkout's, so the two cannot drift without failing a build.
+const CONTRACT: u64 = 1;
+
+/// Whether a conductor that declared `conductor` is one this shell may use.
+///
+/// Silence is not agreement: a conductor that answers without a `contract` at all
+/// is an older build, and `None` therefore fails.  The mismatch being guarded
+/// against is not hypothetical -- upgrade-time *stale files* are a measured
+/// behaviour (`docs/desktop-shell.md` §升级), so a shell from one build really
+/// does meet a conductor from another, and the symptom of writing settings to
+/// one that does not know the fields is a window that forgets where it was.
+fn contract_ok(conductor: Option<u64>) -> bool {
+    conductor == Some(CONTRACT)
+}
+
+/// Ask the conductor which contract it speaks, saying so once if it is one this
+/// shell will not drive.
+fn conductor_is_drivable(api_base: &str) -> bool {
+    match http_get_json(&format!("{api_base}/api/health")) {
+        Ok(v) => {
+            let got = v.get("contract").and_then(|c| c.as_u64());
+            if contract_ok(got) {
+                true
+            } else {
+                println!(
+                    "[shell] REFUSING to use the conductor at {api_base}: it speaks contract \
+                     {}, this shell speaks {CONTRACT} (conductor version {}).  These are \
+                     different builds -- reinstall so both halves come from one installer.",
+                    got.map_or("none".to_string(), |g| g.to_string()),
+                    v.get("version").and_then(|x| x.as_str()).unwrap_or("?"),
+                );
+                false
+            }
+        }
+        Err(e) => {
+            println!("[shell] no contract check: the conductor did not answer ({e})");
+            false
+        }
+    }
+}
+
 /// The panel's settings object inside an `/api/settings` response.
 ///
 /// The API is asymmetric, and that asymmetry cost a debugging session: **GET**
@@ -258,6 +303,9 @@ fn settings_object(v: &serde_json::Value) -> Option<&serde_json::Value> {
 /// writer of settings.json (see docs/shell-contract.md), and two writers of one
 /// small JSON file is how a settings screen starts lying.
 fn saved_geometry(api_base: &str) -> SavedGeometry {
+    if !conductor_is_drivable(api_base) {
+        return SavedGeometry::default();
+    }
     match http_get_json(&format!("{api_base}/api/settings")) {
         Ok(v) => settings_object(&v).map_or_else(SavedGeometry::default, SavedGeometry::from_settings),
         Err(e) => {
@@ -320,6 +368,9 @@ fn save_geometry(window: &tauri::WebviewWindow, api_base: &str) {
         );
         return;
     };
+    if !conductor_is_drivable(api_base) {
+        return;
+    }
     let remember = match http_get_json(&format!("{api_base}/api/settings")) {
         Ok(v) => settings_object(&v)
             .and_then(|s| s.get("remember_position"))
@@ -944,6 +995,13 @@ fn run_page_selftest(window: WebviewWindow) {
         std::thread::sleep(Duration::from_millis(800));
         println!("[page] max button ok={}", window.is_maximized().unwrap_or(false));
         let _ = window.eval("__chronoPageTest.click('tb-max')");
+
+        // Last, because it reports through `page_note` (the shell's log) rather
+        // than through anything Rust can measure: the verdict is a decision the
+        // page makes about the conductor, and the interesting branch -- a
+        // conductor from another build -- is one a working install never has.
+        std::thread::sleep(Duration::from_millis(300));
+        let _ = window.eval("__chronoPageTest.reportGuard()");
     });
 }
 
@@ -1203,7 +1261,8 @@ pub fn run() {
 
 #[cfg(test)]
 mod tests {
-    use super::{min_size, resized_rect, to_logical, visible_origin, Monitor, SavedGeometry};
+    use super::{contract_ok, min_size, resized_rect, to_logical, visible_origin, Monitor,
+                SavedGeometry, CONTRACT};
 
     const PRIMARY: Monitor = Monitor { x: 0.0, y: 0.0, w: 1920.0, h: 1067.0 };
 
@@ -1324,5 +1383,17 @@ mod tests {
         assert_eq!(to_logical(460.0, 1.0), 460.0);
         // A bogus scale factor must not poison the value.
         assert_eq!(to_logical(460.0, 0.0), 460.0);
+    }
+
+    #[test]
+    fn only_a_matching_contract_may_be_driven() {
+        assert!(contract_ok(Some(CONTRACT)));
+        assert!(!contract_ok(Some(CONTRACT + 1)), "a newer conductor is not this shell's");
+        assert!(!contract_ok(Some(0)), "0 is not a contract this shell knows");
+        // The case that actually happens: a conductor from before the field
+        // existed answers `ping`/`health` happily and says nothing about a
+        // contract.  Treating that as agreement is how a window silently writes
+        // settings to a conductor that drops them on the floor.
+        assert!(!contract_ok(None));
     }
 }

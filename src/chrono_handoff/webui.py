@@ -41,6 +41,7 @@ from .conductor import Conductor
 
 if TYPE_CHECKING:  # remote.py imports model.py only, so this is not a cycle
     from .remote import RemoteConductor
+from . import CONTRACT_VERSION, __version__
 from .model import CuePlan, RunStatus, SignalSpec
 
 PANEL_PATH = Path(__file__).with_name("statics") / "panel.html"
@@ -484,7 +485,12 @@ class CuePanel:
     def reset_settings(self) -> dict[str, Any]:
         from .settings import Settings
 
+        # A fresh Settings() is writable by construction, so the refusal has to
+        # be carried across the replacement by hand -- otherwise "reset" is the
+        # one button that still overwrites a file this build cannot read.
+        blocked = self.settings.readonly_reason
         self.settings = Settings()
+        self.settings.readonly_reason = blocked
         self.settings.save(self.settings_path)
         for key, hook in self.window_hooks.items():
             try:
@@ -494,13 +500,26 @@ class CuePanel:
         return self.settings.to_dict()
 
     def health(self) -> dict[str, Any]:
+        """Who is answering, and can it keep what the caller tells it.
+
+        ``version``/``contract`` are what a client checks *before* acting: the
+        two halves of an install can come from different builds (stale files are
+        a measured upgrade behaviour), and a client that skips this finds out by
+        being confusing rather than by being wrong.  ``writable`` is the same
+        question for the state files -- a page that cannot save the numbers the
+        user just typed must say so instead of looking like it worked.
+        """
         return {
             "ok": True,
             "panel": "chrono-cue",
             "url": self.url,
+            "version": __version__,
+            "contract": CONTRACT_VERSION,
             "current_run": self.current_run(),
             "stats": self.conductor.stats(),
             "degraded": self.degraded_reason,
+            "writable": not self.settings.readonly_reason,
+            "why_not_writable": self.settings.readonly_reason,
         }
 
     def events(self, since_seq: int = 0) -> dict[str, Any]:

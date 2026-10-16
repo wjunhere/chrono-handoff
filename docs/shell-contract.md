@@ -62,6 +62,36 @@ const SHELL_BACKENDS = [
    这个服务在 127.0.0.1 上，驱动一次 cue 是物理动作；把权限发给任意网页
    不是可以接受的代价。新宿主需要把自己的 origin 加进那张表。
 
+## 二之三、版本与握手
+
+页面、外壳、conductor 是**可能来自不同构建**的三份东西：升级不会清理多余文件（实测，
+见 `desktop-shell.md` §升级），于是新的窗口真的会遇上旧的 conductor。这不会报错，
+只会“有点怪”。所以每一半都要报出自己是谁，每个会**据此行动**的客户端都要先比一次。
+
+| 常量 | 在哪 | 谁声明 |
+|---|---|---|
+| `CONTRACT_VERSION` | `chrono_handoff/__init__.py` | 唯一真相源 |
+| `contract` | `GET /api/health`、IPC `ping` | conductor（两处都取自同一个常量） |
+| `contract` | `GET /api/health` 的 `writable` / `why_not_writable` | conductor 能否写状态文件（见 `schema.py`） |
+| `PAGE_CONTRACT` | `panel.html` 顶部 | 页面 |
+| `CONTRACT` | `src-tauri/src/lib.rs` | Tauri 外壳 |
+
+两个版本号的区别：`__version__` 随每次发布走，`CONTRACT_VERSION` 只在**含义**变了
+（某个操作或某个端点的语义变了）才走。所以客户端比的是 contract，不是版本。
+
+不匹配时三边的行为：
+
+| 谁 | 行为 |
+|---|---|
+| 页面 | 横幅写明两边各是什么 + **拒绝起拍**（`/api/start` 不发）+ 写一行 `page_note` 到外壳日志。没答、没声明，都算“不是我的 conductor”——对不匹配而言，安全方向是不拍 |
+| Tauri 外壳 | **不读也不写**设置（几何落盘），日志说清为什么，窗口用默认几何 |
+| `chrono doctor` | 把 daemon 的 contract 与本构建对比，不一致就记成一条 problem |
+| 冻结侧车自检 | 包的 `doctor --json` 报的 `contract` 必须等于源检出的，不等就是陈旧快照 |
+
+`CONTRACT_VERSION` 变了要同步的地方：`panel.html` 的 `PAGE_CONTRACT`、`lib.rs` 的
+`CONTRACT`。漏改会被 `desktop/sidecar/build.py` 的自检拦住（它读这两个常量并与 Python
+包比），不会靠人记得。
+
 ## 三、操作清单（13 个）
 
 `args` 全部为可选；除 `page_note` 外返回值不做约定，页面不读。
@@ -123,4 +153,5 @@ panel.window_hooks.update({
 
 - 设置、健康、校准、计划、事件、按键 —— 走 HTTP。
 - 服务端侧的窗口反应 —— 走 `window_hooks`，不要加 seam 方法。
-- 任何「为了让某个框架跑起来」而加的通用性 —— 契约按 §三 这 12 条封闭，不加不减。
+- 任何「为了让某个框架跑起来」而加的通用性 —— 契约按 §三 这 13 条封闭。
+  改这个列表（加、减、改语义）就是**改契约**，同步 `CONTRACT_VERSION`（见 §二之三）。

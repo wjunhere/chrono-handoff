@@ -1083,6 +1083,16 @@ function waitArmed() {
 $("press").addEventListener("pointerdown", doPress);
 $("resync").addEventListener("click", async () => { await syncClock(); if (S.sched) scheduleCue(); });
 $("start").addEventListener("click", async () => {
+  // Refuse before asking the conductor to start a grid this page cannot
+  // interpret.  `healthNote` is set by the first pollHealth, which main() kicks
+  // off immediately; an unanswered conductor counts as "not mine", because the
+  // safe direction for a mismatch is to not fire a cue at all.
+  if (healthNote || healthOk !== true) {
+    const why = healthNote || "尚未确认 conductor 版本";
+    flash("拒绝起拍");
+    try { shellCall("page_note", "refused to arm: " + why); } catch (_) {}
+    return;
+  }
   $("start").hidden = true;
   await fetch(apiURL("/api/start"), { method: "POST", headers: { "Content-Type": "application/json" }, body: "{}" });
 });
@@ -1244,6 +1254,33 @@ const WIN_RGB = { dark: "11,13,17", light: "242,243,246", amber: "20,14,4" };
 //: Last degradation notice shown, so pollHealth does not rewrite the DOM every
 //: 5s with the same string.
 let healthDegraded = null;
+//: Last "this conductor is not one I can drive" notice shown.
+let healthNoteShown = null;
+//: Empty when the conductor that answered is one this page may drive.  Held in a
+//: variable because the arm path has to be able to *refuse*, not merely display.
+let healthNote = "";
+//: The contract the conductor declared, or null if it declared none.
+let healthContract = null;
+//: The contract this page speaks.  Must equal CONTRACT_VERSION in
+//: chrono_handoff/__init__.py; build.py's version gate compares them.
+const PAGE_CONTRACT = 1;
+
+/* Why this page must not drive the conductor that just answered.
+
+   A pure function of the three things `/api/health` reports, so the branch that
+   matters can be exercised from outside without waiting for a mixed install to
+   exist.  Empty string means "go ahead". */
+function contractNote(contract, writable, why) {
+  if (contract !== PAGE_CONTRACT) {
+    return "界面与 conductor 不是同一次构建（界面 contract " + PAGE_CONTRACT
+         + "，conductor " + (contract === null || contract === undefined ? "未声明" : contract)
+         + "）：请重新安装，让两半来自同一个安装包";
+  }
+  if (!writable) {
+    return why || "设置无法保存";
+  }
+  return "";
+}
 
 function applyTheme(t) {
   document.body.classList.remove("theme-light","theme-amber");
@@ -1314,8 +1351,17 @@ async function refreshCal() {
 
 async function saveSettings() {
   const patch = collect();
-  await fetch(apiURL("/api/settings"),{method:"POST",headers:{"Content-Type":"application/json"},
+  const r = await fetch(apiURL("/api/settings"),{method:"POST",headers:{"Content-Type":"application/json"},
                                body:JSON.stringify(patch)});
+  if (!r.ok) {
+    // The conductor refuses to write over a settings file from a newer build.
+    // Saying "已保存" here would be this page lying about the user's numbers.
+    let why = "保存失败";
+    try { why = (await r.json()).error || why; } catch (_) {}
+    flash("保存失败");
+    try { shellCall("page_note", "settings save refused: " + why); } catch (_) {}
+    return;
+  }
   CFG = Object.assign({}, CFG, patch);
   applyTheme(patch.theme);
   // The native chrome (DWM backdrop, immersive-dark flag, window paint colour)
@@ -1344,21 +1390,38 @@ function setSettings(open) {
    that can never arrive.  Say it out loud.                                  */
 let healthOk = null;
 async function pollHealth() {
-  let ok = true, degraded = "";
+  let ok = true, degraded = "", contract = null, writable = true, why = "";
   try {
     const r = await fetch(apiURL("/api/health"), { cache: "no-store" });
     ok = r.ok;
-    if (ok) { try { degraded = ((await r.json()).degraded) || ""; } catch {} }
+    if (ok) {
+      try {
+        const h = await r.json();
+        degraded = h.degraded || "";
+        contract = (typeof h.contract === "number") ? h.contract : null;
+        writable = h.writable !== false;
+        why = h.why_not_writable || "";
+      } catch {}
+    }
   } catch { ok = false; }
 
-  // Announce a browser-tab downgrade.  The window is usually spawned detached,
-  // so the stderr warning goes to a log nobody reads and the operator is left
-  // thinking the project is simply a web app.
-  if (degraded !== healthDegraded) {
+  healthNote = ok ? contractNote(contract, writable, why) : "";
+  healthContract = ok ? contract : null;
+
+  // Announce a browser-tab downgrade, or a conductor this page cannot drive.
+  // The window is usually spawned detached, so an stderr warning goes to a log
+  // nobody reads -- and the operator is left thinking the project is simply a
+  // web app, or that a save which did not happen did happen.
+  if (degraded !== healthDegraded || healthNote !== healthNoteShown) {
     healthDegraded = degraded;
+    healthNoteShown = healthNote;
     const a = $("degraded");
-    if (a) { a.textContent = degraded; a.hidden = !degraded; }
+    const msg = degraded && healthNote ? degraded + " · " + healthNote : (healthNote || degraded);
+    if (a) { a.textContent = msg; a.hidden = !msg; }
     document.body.classList.toggle("degraded", !!degraded);
+    if (healthNote) {
+      try { shellCall("page_note", "refusing to drive this conductor: " + healthNote); } catch (_) {}
+    }
   }
 
   if (ok === healthOk) return;
@@ -1660,7 +1723,31 @@ function wireShell() {
         panelObserved: !!S.panelObserved, finished: S.finished,
         pressText: $("press").textContent, pressDisabled: $("press").disabled,
         result: $("m-result").textContent,
+        // The version guard, as the page actually resolved it.
+        pageContract: PAGE_CONTRACT, healthNote, healthContract,
+        banner: ($("degraded") && !$("degraded").hidden) ? $("degraded").textContent : "",
       };
+    },
+
+    // Drive the version guard's decision directly.  The branch that matters most
+    // -- a conductor from a different build -- cannot be produced by a working
+    // install, and "it would refuse" is worth less than showing it refuse.
+    contractNote: (contract, writable, why) => contractNote(contract, writable, why),
+    pageContract: PAGE_CONTRACT,
+
+    // Report that decision through the shell's log, which is the only channel a
+    // release build of the page has.  `live` is the real verdict for the
+    // conductor this window is actually running with; the rest are the branches
+    // a working install cannot reach.
+    reportGuard() {
+      const say = (m) => { try { shellCall("page_note", "guard " + m); } catch (_) {} };
+      const j = (s) => JSON.stringify(s);
+      say("live note=" + j(healthNote) + " contract=" + j(healthContract));
+      say("same-build=" + j(contractNote(PAGE_CONTRACT, true, "")));
+      say("other-build=" + j(contractNote(PAGE_CONTRACT + 1, true, "")));
+      say("not-writable=" + j(contractNote(PAGE_CONTRACT, false, "why-not")));
+      say("unanswered=" + j(contractNote(null, true, "")));
+      return PAGE_CONTRACT;
     },
   };
 

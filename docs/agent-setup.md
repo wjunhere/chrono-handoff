@@ -278,6 +278,8 @@ python scripts/e2e_split_mode.py    # 分离模式（13 项）
 | cue 弹了但窗口没抬起 | 升级到最新版（hosted 模式曾漏掉 armed 订阅） |
 | 面板字体不对 | 确认 `http://127.0.0.1:8790/fonts/inter-latin.woff2` 能打开；中文需本机有 Noto Sans SC |
 | 窗口开在屏幕外 | 已自动拉回；如仍发生删掉 `~/.chrono-handoff/settings.json` |
+| 面板红字写着"不是同一次构建"、拒绝起拍 | 窗口与 conductor 来自两个安装包（升级不清理旧文件）。重装一次，让两半来自同一个安装包。`chrono doctor` 会报出两边各是什么 |
+| 改了设置又弹回、提示"保存失败" | `settings.json` 是更新版本写的（降级后会出现），本构建**拒绝覆盖**它。那条消息里写着 `schema n`。升回新版本，或把该文件移到一边 |
 | 想换端口 | daemon/MCP 都认 `CHRONO_IPC_PORT`；面板用 `--panel-port` |
 
 不想自动拉 daemon 的话：`CHRONO_AUTOSTART=0`，然后自己 `chrono daemon --background`。

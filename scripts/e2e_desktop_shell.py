@@ -491,7 +491,9 @@ def phase_page_pointer() -> None:
         text = ""
         for _ in range(80):
             text = log_path.read_text(encoding="utf-8", errors="replace")
-            if text.count("[page]") >= 4:
+            # The guard report is emitted last, so waiting for it means every
+            # probe has finished rather than merely started.
+            if "guard unanswered=" in text:
                 break
             if proc.poll() is not None:
                 break
@@ -505,6 +507,14 @@ def phase_page_pointer() -> None:
             ("title-bar drag moves by exactly the drag", "title drag ok=true"),
             ("minimise button reaches the OS window", "min button ok=true"),
             ("maximise button reaches the OS window", "max button ok=true"),
+            # The version guard, in the real page, with the real conductor: the
+            # live verdict has to be "this conductor is mine", and the branches a
+            # working install cannot reach are driven directly.
+            ("the page accepts the conductor it is running with", 'guard live note="" contract=1'),
+            ("the version guard accepts a matching contract", 'guard same-build=""'),
+            ("...refuses a contract from another build", 'guard other-build="界面与 conductor 不是同一次构建'),
+            ("...passes a not-writable reason through", 'guard not-writable="why-not"'),
+            ("...refuses a conductor that declares none", 'guard unanswered="界面与'),
         ):
             check(label, fragment in text, page_line(fragment.split(" ok")[0]))
     finally:

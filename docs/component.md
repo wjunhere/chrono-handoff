@@ -262,6 +262,18 @@ python -m chrono_handoff.cli settings --reset             # 恢复默认
 1. **配置文件损坏不会影响出提示** —— 解析失败直接回落默认值。组件必须在关键时刻能用，不能因为一个 JSON 写坏就罢工。
 2. **设置面板和 conductor 必须用同一份数** —— `prepare` 时会把设置里的 `lead_s/ioi_ms/tail_beats` 作为默认值合并进计划，否则"设置界面"就是个谎。
 
+状态文件带一个 `schema` 号（`src/chrono_handoff/schema.py`，`settings.json` 与
+`calibration.json` 同一套）：
+
+- **没有 `schema` 字段**的旧文件按当前 schema 处理，不是"未知"——那个标记是在布局已经
+  定了之后才加的。
+- 读到**比本构建更新**的 schema：数字用默认值，但**拒绝写入**，原因同时出现在
+  `/api/health` 的 `writable`/`why_not_writable`、面板横幅和 `chrono doctor` 里。
+  上面第 1 条只管**读**；拿它去**写**就是降级（回退版本、装旧包）时的静默数据丢失，
+  而 `calibration.json` 里装的是一个人的实测数据，丢了算不回来。
+- 真要迁移时会先留一份 `<文件名>.v<旧号>.bak`，迁移函数按序号依次作用（`MIGRATIONS`，
+  目前为空）。
+
 ## 四点六、退出与重启
 
 ```bash
