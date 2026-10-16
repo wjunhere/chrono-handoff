@@ -515,14 +515,21 @@ def phase_page_pointer() -> None:
             ("...refuses a contract from another build", 'guard other-build="界面与 conductor 不是同一次构建'),
             ("...passes a not-writable reason through", 'guard not-writable="why-not"'),
             ("...refuses a conductor that declares none", 'guard unanswered="界面与'),
-            # The update seam, in the real shell: this build has no update key
-            # compiled in, and the honest answer to that is a state which says so
-            # -- never a silent nothing, and never a button that looks like it
-            # worked.  Driven through the page, so this covers the whole path.
-            ("the update seam reports honestly when it cannot update",
-             'update phase=unconfigured has-detail=true'),
         ):
             check(label, fragment in text, page_line(fragment.split(" ok")[0]))
+
+        # The update seam, in the real shell, driven through the page.  What is
+        # asserted is that it *answers with something real* -- not which phase:
+        # a build with no key says `unconfigured`, one with a key says `idle` or
+        # `error` (there is no release to find yet).  Pinning the exact phase here
+        # would have made this suite fail the moment the key was added, which is
+        # pretending to check honesty while checking configuration.
+        seam = page_line("update phase=")
+        check(
+            "the update seam answers with a phase the page can act on",
+            "update phase=" in seam and "(none)" not in seam and "threw" not in seam,
+            seam,
+        )
     finally:
         if proc.poll() is None:
             proc.kill()
