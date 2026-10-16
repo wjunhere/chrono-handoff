@@ -256,6 +256,33 @@ def cmd_doctor(args: argparse.Namespace) -> int:
     if cal.readonly_reason:
         problems.append(cal.readonly_reason)
 
+    # A marker left behind means the last update did not finish starting.  The
+    # shell writes it before an installer runs and removes it once the window and
+    # the conductor are both up, so its presence is the only evidence a failed
+    # update leaves -- and this is where someone looks when the app "behaves
+    # oddly since it updated".  The kept installer is named because that is the
+    # way back.
+    from .home import chrono_home
+
+    marker = chrono_home() / "pending_update.json"
+    if marker.is_file():
+        try:
+            pending = json.loads(marker.read_text(encoding="utf-8"))
+        except Exception as exc:
+            rows.append(("pending update", "UNREADABLE", f"{marker}: {exc}"))
+            problems.append(f"the update marker at {marker} is unreadable: {exc}")
+        else:
+            artifact = chrono_home() / "updates" / str(pending.get("artifact", "?"))
+            rows.append((
+                "pending update",
+                f"{pending.get('from')} -> {pending.get('to')}",
+                f"the last update never came up; go back with {artifact}",
+            ))
+            problems.append(
+                f"the last update ({pending.get('from')} -> {pending.get('to')}) did not "
+                f"finish starting; install {artifact} to go back"
+            )
+
     # State files carry a schema (see schema.py).  When one cannot be written,
     # doctor is the place that says so: the panel can only say "could not save".
     from .schema import SCHEMA

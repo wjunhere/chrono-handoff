@@ -899,10 +899,51 @@ fn wait_for_panel(host: &str, port: u16) -> bool {
 /// It drives the commands through the *page's own* `shellCall`, so the chain is
 /// real: page JS -> invoke -> ACL -> Rust -> the OS window.  Only the synthetic
 /// mouse is skipped.  Off by default and inert in any normal run.
+/// What the window is right now, for the log line beside a geometry measurement.
+///
+/// The failure this exists for reads as broken arithmetic: Windows reports the rect
+/// (-21333,-21333) for a minimised window, so "drag ok=false" looked exactly like
+/// wrong drag maths when the window had simply been minimised.  A sentinel rect
+/// next to `window=normal` means something else entirely, and this is what tells
+/// the two apart without another round of guessing.
+fn window_state(window: &WebviewWindow) -> &'static str {
+    if window.is_minimized().unwrap_or(false) {
+        "minimised"
+    } else if window.is_maximized().unwrap_or(false) {
+        "maximised"
+    } else {
+        "normal"
+    }
+}
+
+/// Make the window normal before a geometry probe reads its rectangle.
+///
+/// Windows reports a *sentinel* rectangle for a minimised window
+/// (-21333,-21333), and every probe here is a difference between two rectangles --
+/// so a window that anything minimised, at any point in the sequence, makes the
+/// drag and resize measurements read as broken arithmetic.
+///
+/// Checked before *each* measurement rather than once at the start, because "once
+/// at the start" is how the first version of this guard missed the case that
+/// actually happened.
+fn normal_before_measuring(window: &WebviewWindow) {
+    if window.is_minimized().unwrap_or(false) {
+        println!("[shell] selftest: the window was minimised; restoring it before measuring");
+        let _ = window.unminimize();
+        std::thread::sleep(Duration::from_millis(500));
+    }
+    if window.is_maximized().unwrap_or(false) {
+        println!("[shell] selftest: the window was maximised; restoring it before measuring");
+        let _ = window.unmaximize();
+        std::thread::sleep(Duration::from_millis(500));
+    }
+}
+
 fn run_selftest(window: WebviewWindow) {
     std::thread::spawn(move || {
         std::thread::sleep(Duration::from_millis(2200)); // let the page's script settle
 
+        normal_before_measuring(&window);
         let before = logical_rect(&window).ok();
         let _ = window.eval(
             "shellCall('begin_drag'); shellCall('update_drag', 120, 90); shellCall('end_drag');",
@@ -913,8 +954,8 @@ fn run_selftest(window: WebviewWindow) {
             // itself -- not a multiple of it.
             let ok = ((a.0 - b.0) - 120.0).abs() <= 2.0 && ((a.1 - b.1) - 90.0).abs() <= 2.0;
             println!(
-                "[shell] selftest drag ok={ok} from=({:.0},{:.0}) to=({:.0},{:.0})",
-                b.0, b.1, a.0, a.1
+                "[shell] selftest drag ok={ok} from=({:.0},{:.0}) to=({:.0},{:.0}) window={}",
+                b.0, b.1, a.0, a.1, window_state(&window)
             );
         }
 
@@ -923,11 +964,12 @@ fn run_selftest(window: WebviewWindow) {
             "shellCall('begin_resize','se'); shellCall('update_resize', 80, 60); shellCall('end_resize');",
         );
         std::thread::sleep(Duration::from_millis(800));
+        normal_before_measuring(&window);
         if let (Some(b), Ok(a)) = (before, logical_rect(&window)) {
             let ok = (a.2 - b.2 - 80.0).abs() <= 2.0 && (a.3 - b.3 - 60.0).abs() <= 2.0;
             println!(
-                "[shell] selftest resize ok={ok} from=({:.0}x{:.0}) to=({:.0}x{:.0})",
-                b.2, b.3, a.2, a.3
+                "[shell] selftest resize ok={ok} from=({:.0}x{:.0}) to=({:.0}x{:.0}) window={}",
+                b.2, b.3, a.2, a.3, window_state(&window)
             );
         }
 
@@ -1033,6 +1075,16 @@ fn run_page_press_selftest(window: WebviewWindow) {
 /// message box.
 fn report_fatal(msg: &str) {
     println!("[shell] FATAL: {msg}");
+    // An app that fails to start right after an update is the one case where the
+    // user has no UI to read this in, so the way back goes into the message box
+    // itself.  Read straight from the state directory: the conductor is exactly
+    // what may be missing or broken here, so nothing can be asked of it.
+    let mut full = msg.to_string();
+    if let Some(pending) = read_pending_update() {
+        full.push_str("\n\n");
+        full.push_str(&stale_update_hint(&pending, &updates_dir()));
+    }
+    let msg = full.as_str();
     let path = conductor_log_path();
     if let Some(dir) = path.parent() {
         let _ = std::fs::create_dir_all(dir);
@@ -1184,6 +1236,86 @@ fn updater(app: &tauri::AppHandle) -> Option<tauri_plugin_updater::Updater> {
         .ok()
 }
 
+/// Where a downloaded update is kept, and where the marker saying one is in
+/// flight lives.
+///
+/// Deliberately inside `chrono_home_dir()`, with everything else this app writes
+/// for a user: a support conversation should not need to know about a second
+/// place, and a way back that nobody can find is not a way back.
+fn updates_dir() -> std::path::PathBuf {
+    chrono_home_dir().join("updates")
+}
+
+fn pending_update_path() -> std::path::PathBuf {
+    chrono_home_dir().join("pending_update.json")
+}
+
+/// A marker written before an installer runs and cleared once the app is up.
+///
+/// It answers the one question an update cannot answer about itself: whether the
+/// version it installed actually starts.  Nothing inside a build that does not
+/// start can report that, so the report is the *absence* of this file -- and a file
+/// still here at the next launch means the last update did not come up, which is
+/// the only moment a rollback is worth offering.
+#[derive(serde::Serialize, serde::Deserialize, Clone)]
+struct PendingUpdate {
+    from: String,
+    to: String,
+    /// The installer kept beside it.  Kept so the way back is a local file rather
+    /// than a download -- which may be the very thing that is broken, and may not
+    /// exist at all on the isolated networks this tool is documented for.
+    artifact: String,
+    at_unix: u64,
+}
+
+fn read_pending_update() -> Option<PendingUpdate> {
+    let path = pending_update_path();
+    let raw = std::fs::read_to_string(&path).ok()?;
+    match serde_json::from_str(&raw) {
+        Ok(p) => Some(p),
+        Err(e) => {
+            // Corrupt is worth saying out loud: "no update is in flight" and "an
+            // update was in flight and its record is unreadable" are different
+            // situations to be in.
+            println!("[shell] WARNING: {} is unreadable ({e})", path.display());
+            None
+        }
+    }
+}
+
+fn write_pending_update(p: &PendingUpdate) -> Result<(), String> {
+    std::fs::create_dir_all(updates_dir()).map_err(|e| e.to_string())?;
+    let text = serde_json::to_string_pretty(p).map_err(|e| e.to_string())?;
+    std::fs::write(pending_update_path(), text + "\n").map_err(|e| e.to_string())
+}
+
+fn clear_pending_update() {
+    let path = pending_update_path();
+    match std::fs::remove_file(&path) {
+        Ok(()) => println!("[shell] removed {}: the app came up", path.display()),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+        Err(e) => println!("[shell] WARNING: cannot remove {} ({e})", path.display()),
+    }
+}
+
+/// What to tell someone whose app did not come up after an update.
+///
+/// Pure apart from the directory, so `cargo test` can read the words.  This text
+/// appears at the worst possible moment -- a message box in front of an app that
+/// will not start -- and it has exactly one job: say what happened and where the
+/// way back is.  It is the reason the installer is kept on disk at all.
+fn stale_update_hint(p: &PendingUpdate, dir: &std::path::Path) -> String {
+    format!(
+        "the last update ({} -> {}) did not finish starting.\n\n\
+         Go back to the version that worked:\n  install {}\n\n\
+         Or download it again from\n  https://github.com/wjunhere/chrono-handoff/releases\n\
+         (a build that cannot start cannot update itself).",
+        p.from,
+        p.to,
+        dir.join(&p.artifact).display(),
+    )
+}
+
 #[tauri::command]
 fn update_status(app: tauri::AppHandle, slot: tauri::State<'_, UpdateHandle>) -> UpdateState {
     let mut guard = slot.lock().unwrap();
@@ -1325,12 +1457,62 @@ fn update_install(slot: tauri::State<'_, UpdateHandle>) -> Result<UpdateState, S
                 }
             }
         };
-        let result = update.download_and_install(on_chunk, || {}).await;
+        // `download` verifies the signature before it returns, so everything after
+        // this line is bytes from this publisher.
+        let outcome = update.download(on_chunk, || {}).await;
+        let bytes = match outcome {
+            Ok(bytes) => bytes,
+            Err(e) => {
+                let mut guard = handle.lock().unwrap();
+                guard.state.phase = "error".into();
+                guard.state.error = Some(e.to_string());
+                println!("[shell] update download failed: {e}");
+                return;
+            }
+        };
+
+        // Keep the installer before running it.  Two reasons, both about the
+        // moment when the app does not come back: it is the way to reinstall the
+        // version that is on disk, and on an isolated network a fresh download is
+        // not available at all.  Failure to keep it is reported but not fatal --
+        // the update itself is what the operator asked for.
+        let name = update
+            .download_url
+            .path_segments()
+            .and_then(|segments| segments.last())
+            .unwrap_or("chrono-handoff-update")
+            .to_string();
+        let kept = updates_dir().join(&name);
+        if let Err(e) = std::fs::create_dir_all(updates_dir())
+            .and_then(|()| std::fs::write(&kept, &bytes))
+        {
+            println!("[shell] WARNING: cannot keep the installer at {} ({e})", kept.display());
+        } else {
+            println!("[shell] installer kept at {}", kept.display());
+        }
+        let marker = PendingUpdate {
+            from: update.current_version.clone(),
+            to: update.version.clone(),
+            artifact: name,
+            at_unix: std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_secs())
+                .unwrap_or(0),
+        };
+        match write_pending_update(&marker) {
+            Ok(()) => println!(
+                "[shell] installing {} -> {}; a marker is on disk until this app comes up",
+                marker.from, marker.to
+            ),
+            Err(e) => println!("[shell] WARNING: cannot write the update marker ({e})"),
+        }
+
+        // On Windows this never returns: the plugin hands the installer the launch
+        // and quits, and the installer restarts the app.  Elsewhere a relaunch is
+        // the caller's job, which is what the state below is for.
+        let result = update.install(&bytes);
         let mut guard = handle.lock().unwrap();
         match result {
-            // On Windows this is not reached: the plugin quits the app once the
-            // installer is running, and the installer restarts it.  The line is
-            // for macOS/Linux, where a relaunch is the caller's job.
             Ok(()) => {
                 guard.state.phase = "installing".into();
                 guard.state.detail = Some("installed; restart to run it".into());
@@ -1528,6 +1710,28 @@ pub fn run() {
                 _ => {}
             });
 
+            // This build is up: a window exists and the conductor it talks to
+            // answers with the contract it expects.  That is the fact the marker
+            // was waiting for, so it goes -- and if it is still here at the next
+            // launch, the last update did not get this far.
+            if let Some(pending) = read_pending_update() {
+                if conductor_is_drivable(&base) {
+                    println!(
+                        "[shell] {} -> {} came up; the pending marker is no longer needed",
+                        pending.from, pending.to
+                    );
+                    clear_pending_update();
+                } else {
+                    println!(
+                        "[shell] WARNING: the last update ({} -> {}) is still pending and the \
+                         conductor is not one this shell can drive.  Rollback: install {}",
+                        pending.from,
+                        pending.to,
+                        updates_dir().join(&pending.artifact).display()
+                    );
+                }
+            }
+
             // Once per launch, off the startup path: a few seconds in, in its own
             // thread, and nothing depends on it succeeding.  This tool is
             // documented for isolated networks, so a failed check is a log line
@@ -1559,8 +1763,8 @@ pub fn run() {
 
 #[cfg(test)]
 mod tests {
-    use super::{contract_ok, install_decision, min_size, resized_rect, to_logical, visible_origin,
-                Monitor, SavedGeometry, CONTRACT};
+    use super::{contract_ok, install_decision, min_size, resized_rect, stale_update_hint, to_logical,
+                visible_origin, Monitor, PendingUpdate, SavedGeometry, CONTRACT};
 
     const PRIMARY: Monitor = Monitor { x: 0.0, y: 0.0, w: 1920.0, h: 1067.0 };
 
@@ -1681,6 +1885,25 @@ mod tests {
         assert_eq!(to_logical(460.0, 1.0), 460.0);
         // A bogus scale factor must not poison the value.
         assert_eq!(to_logical(460.0, 0.0), 460.0);
+    }
+
+    #[test]
+    fn the_stale_update_hint_names_the_way_back() {
+        let pending = PendingUpdate {
+            from: "0.1.0".into(),
+            to: "0.2.0".into(),
+            artifact: "chrono-handoff_0.2.0_x64-setup.exe".into(),
+            at_unix: 0,
+        };
+        let text = stale_update_hint(&pending, std::path::Path::new("state/updates"));
+        // These words appear in a message box in front of an app that will not
+        // start.  They have one job, so the test reads them like a person would:
+        // which pair of versions, where the installer is, and why this cannot be
+        // done by the app itself.
+        assert!(text.contains("0.1.0 -> 0.2.0"), "{text}");
+        assert!(text.contains("chrono-handoff_0.2.0_x64-setup.exe"), "{text}");
+        assert!(text.contains("releases"), "the way back has to be reachable: {text}");
+        assert!(text.contains("cannot update itself"), "and the reason it is manual: {text}");
     }
 
     #[test]

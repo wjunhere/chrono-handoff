@@ -479,6 +479,13 @@ def phase_page_pointer() -> None:
     log_path = ROOT / "logs" / "_shell" / "pagepointer.log"
     log_path.parent.mkdir(parents=True, exist_ok=True)
     (Path(os.environ["CHRONO_HOME"]) / "settings.json").unlink(missing_ok=True)
+    home = Path(os.environ["CHRONO_HOME"])
+    marker = home / "pending_update.json"
+    (home / "updates").mkdir(parents=True, exist_ok=True)
+    (home / "updates" / "chrono-handoff_9.9.9_x64-setup.exe").write_bytes(b"kept installer")
+    marker.write_text(json.dumps({"from": "0.1.0", "to": "9.9.9",
+                                  "artifact": "chrono-handoff_9.9.9_x64-setup.exe",
+                                  "at_unix": 0}), encoding="utf-8")
     log = log_path.open("w", encoding="utf-8")
     proc = subprocess.Popen(
         [str(SHELL_EXE)],
@@ -530,6 +537,18 @@ def phase_page_pointer() -> None:
             "update phase=" in seam and "(none)" not in seam and "threw" not in seam,
             seam,
         )
+
+        # The other half of the rollback story.  A marker written *before* this
+        # launch is what an app that did not come up would leave behind, so the
+        # only reason its absence means anything is that a successful start
+        # removes it -- and that is what this checks, against the real file and
+        # the real log.  The kept installer is left alone: it is the way back.
+        check("a marker present at launch is cleared once the app is up", not marker.exists())
+        check("...and the log says so, with the version pair",
+              "0.1.0 -> 9.9.9 came up" in text,
+              page_line("came up"))
+        check("the kept installer is not deleted",
+              (home / "updates" / "chrono-handoff_9.9.9_x64-setup.exe").is_file())
     finally:
         if proc.poll() is None:
             proc.kill()
