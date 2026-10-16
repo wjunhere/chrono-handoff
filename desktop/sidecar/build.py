@@ -20,10 +20,18 @@ The build is followed by a self-check that can fail (see ``verify``): the frozen
 app must not be able to do less than the source checkout it was built from, and
 it must actually serve the panel over HTTP.  ``--no-build`` re-runs only that
 check against the binary already in place.
+
+A successful build and check writes ``<binary>.stamp``: the hash of every file
+the frozen conductor is made of.  ``--stale-check`` compares it with the working
+tree, and ``build.rs`` runs that in release builds -- because PyInstaller is a
+separate step `cargo build` knows nothing about, so editing Python leaves the
+artifact behind, and a stale conductor answers, passes its own selftest and
+reports the same version.  Nothing else would ever notice.
 """
 
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import re
@@ -95,6 +103,80 @@ def copy_for_dev_run(built: Path, exe: str) -> None:
         print(f"copied for cargo-build dev runs: {dev_dest}")
     else:
         print(f"for a dev run, copy it next to the shell binary as chrono-core{exe}")
+
+
+# --------------------------------------------------------------------------
+# is the frozen conductor still the one these sources produce?
+# --------------------------------------------------------------------------
+#
+# PyInstaller cannot be driven from `cargo build`, so the editable half of the
+# project moves on while the artifact stays behind -- measured once: the sidecar
+# was built at 13:58 while the Python kept changing until 22:15, and the installer
+# that followed carried the morning's code.  Nothing else catches it: a stale
+# conductor answers, passes its own selftest, and reports the same version and
+# contract, so every other check in this file is satisfied by it.
+
+def stamp_path(name: str) -> Path:
+    """Beside the binary, not in the work directory: it describes that artifact.
+
+    Named after the target triple rather than the executable, so the name is the
+    same shape on every platform (``...msvc.stamp`` beside ``...msvc.exe``).
+    """
+    return OUT_DIR / f"{name}.stamp"
+
+
+def sidecar_inputs() -> list[Path]:
+    """Every file the frozen conductor is made of.
+
+    The statics because `--add-data` ships them, and the entry/build scripts
+    because they decide how the bundle is assembled -- editing any of them means
+    the artifact on disk is no longer what the sources say it is.
+    """
+    files = [p for p in (ROOT / "src" / "chrono_handoff").rglob("*.py") if p.is_file()]
+    files += [p for p in STATICS.rglob("*") if p.is_file()]
+    files += [HERE / "entry.py", HERE / "build.py"]
+    return sorted(set(files))
+
+
+def source_fingerprint() -> dict[str, str]:
+    return {
+        p.relative_to(ROOT).as_posix(): hashlib.sha256(p.read_bytes()).hexdigest()
+        for p in sidecar_inputs()
+    }
+
+
+def write_stamp(built: Path, name: str) -> None:
+    stamp_path(name).write_text(
+        json.dumps({"binary": built.name, "files": source_fingerprint()},
+                   indent=2, sort_keys=True) + "\n",
+        encoding="utf-8",
+    )
+
+
+def stale_check(name: str) -> int:
+    """Compare the stamp with the working tree.  0 = fresh, 1 = do not ship it."""
+    stamp = stamp_path(name)
+    if not stamp.is_file():
+        print(f"NO STAMP: {stamp.name} does not exist, so what this sidecar was built "
+              "from is unknown.  Run desktop/sidecar/build.py to build it and record one.")
+        return 1
+    recorded: dict[str, str] = json.loads(stamp.read_text(encoding="utf-8"))["files"]
+    now = source_fingerprint()
+    added = sorted(set(now) - set(recorded))
+    removed = sorted(set(recorded) - set(now))
+    changed = sorted(k for k in set(now) & set(recorded) if now[k] != recorded[k])
+    if not (added or removed or changed):
+        print(f"FRESH: the frozen conductor was built from exactly these {len(now)} files.")
+        return 0
+    print(f"STALE: the sidecar was built from different sources "
+          f"({len(changed)} changed, {len(added)} added, {len(removed)} removed).")
+    for label, names in (("changed", changed), ("added", added), ("removed", removed)):
+        for n in names[:6]:
+            print(f"  {label}: {n}")
+        if len(names) > 6:
+            print(f"  {label}: ... and {len(names) - 6} more")
+    print("Rebuild it:  python desktop/sidecar/build.py")
+    return 1
 
 
 # --------------------------------------------------------------------------
@@ -485,6 +567,9 @@ def verify(built: Path) -> int:
         for f in findings:
             print(f"  - {f}")
         return 1
+    # Only now: the stamp says "this artifact was built from these sources *and*
+    # passed the checks", so a failing build must not leave a fresh one behind.
+    write_stamp(built, built.name.removesuffix(".exe"))
     print("\nself-check passed", flush=True)
     return 0
 
@@ -495,6 +580,9 @@ def main() -> int:
     exe = ".exe" if sys.platform == "win32" else ""
     name = f"chrono-core-{triple}"
     built = OUT_DIR / f"{name}{exe}"
+
+    if "--stale-check" in argv:
+        return stale_check(name)
 
     if "--no-build" in argv:
         if not built.exists():

@@ -223,6 +223,36 @@ selftest 里多数机制是**测时序**的，机器忙时会偶发失败（本�
 `9/10`，重跑三次都是 `10/10`）。失败时会打出是哪一项 `[FAIL]`，因为「真的丢了能力」
 和「刚才机器在忙」需要完全不同的反应。
 
+### 陈旧守卫（release 构建会拦）
+
+成功构建 + 自检通过后，会在二进制旁写一份 `<binary>.stamp`：构成这个冻结包的每个文件
+的 sha256。`build.rs` 在 **release** 构建里跑 `--stale-check` 拿工作区跟它比，不一致就
+**让 release 构建失败**；debug 构建连查都不查（改 Python 不应该挡住开发）。
+
+为什么需要它：cargo 根本不知道 PyInstaller 这一步，所以改 Python 会把产物落在后面，
+而**陈旧的 conductor 会应答、会通过自己的 selftest、报的版本号和 contract 也一样**，
+其余检查一个都拦不住。实测过一次：侧车 13:58 编的，Python 改到 22:15，接下来的安装包
+带的是早上的代码。失败信息直接列出哪些文件变了：
+
+```
+the frozen conductor beside this shell is not built from these sources.
+STALE: the sidecar was built from different sources (1 changed, 0 added, 0 removed).
+  changed: src/chrono_handoff/cue.py
+Rebuild it:  python desktop/sidecar/build.py
+```
+
+四条要记住的行为：
+
+| 情况 | 结果 |
+|---|---|
+| `cargo build`（debug） | 不查。开发改 Python 不会被挡 |
+| `cargo build --release` / `tauri build` | 陈旧或**没有 stamp** 就失败（release 产物是**一对**） |
+| 找不到 `.venv` 解释器 | release 只给 `cargo:warning`，不失败（贡献者不被卡住） |
+| `python desktop/sidecar/build.py --stale-check` | 手查：退出码 0/1，会列出变化的文件 |
+
+`build.rs` 为 `src/chrono_handoff/**` 逐个文件发 `cargo:rerun-if-changed`（跳过
+`__pycache__`：字节码变动不是源码变动，盯它会让每次跑 Python 都重编外壳）。
+
 **PyInstaller 不能交叉编译**，必须在每个目标平台上各跑一次（CI 亦然）。
 
 侧车是**冻结**的：`statics/` 和 `chrono_handoff/*.py` 都是构建那一刻的快照。

@@ -225,7 +225,7 @@ python scripts/e2e_state_paths.py     # 用户状态落点（与 cwd 无关）
 python scripts/e2e_update_window.py   # cue 安全窗口：不安全时 409 拒，安全时 daemon 自退
 python scripts/e2e_desktop_shell.py   # Tauri 桌面外壳（需先 cargo build）
 cd desktop/src-tauri && cargo test    # 外壳几何算式（边方向/夹紧/累计位移/窗口位置与恢复）
-python desktop/sidecar/build.py       # 冻结侧车并自检（--no-build 只自检）
+python desktop/sidecar/build.py       # 冻结侧车并自检（--no-build 只自检，--stale-check 只比指纹）
 ```
 
 这些在 CI 里自动跑（`.github/workflows/ci.yml`）：
