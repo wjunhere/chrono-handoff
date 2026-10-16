@@ -326,6 +326,11 @@ class CuePanel:
                         # armed without hammering the server, and keeps the
                         # panel responsive when opened *before* it is needed.
                         self._json(panel.wait_for_armed(float(qs.get("timeout", "20") or 20)))
+                    elif path == "/api/update-ready":
+                        # Asked by the update path before it stops anything: an
+                        # updater that restarts the window mid-cue leaves somebody
+                        # who was told to press at T holding a dead window.
+                        self._json(panel.conductor.update_ready())
                     else:
                         self._json({"error": "not found", "path": path}, 404)
                 except Exception as exc:
@@ -347,6 +352,14 @@ class CuePanel:
                         self._json(panel.start(body))
                     elif path == "/api/cancel":
                         self._json(panel.cancel(body))
+                    elif path == "/api/update-prepare":
+                        # Reply first, then let it go: the teardown is deferred
+                        # inside `stand_down` for exactly this reason.  A refusal
+                        # is a 409 rather than a 200 with ok=false, so a caller
+                        # that only looks at the status code cannot read it as
+                        # consent to proceed.
+                        res = panel.conductor.stand_down()
+                        self._json(res, 200 if res.get("ok") else 409)
                     else:
                         self._json({"error": "not found", "path": path}, 404)
                 except Exception as exc:

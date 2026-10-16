@@ -61,14 +61,17 @@ jobs:
         run: chrono selftest
 
       - name: Headless suites
-        # 这五个只碰 HTTP 与文件系统：不开窗口、不需要显示器、不需要音频设备。
+        # 这几个只碰 HTTP 与文件系统：不开窗口、不需要显示器、不需要音频设备。
         # 窗口套件在 windows-ui 里，不在这里假装能跑。
+        # e2e_update_window 也在这一组：它用 --audio null 起真 daemon，全程只有
+        # HTTP/IPC，而且它验的是“要停时钟之前先问时钟”那条语义。
         shell: bash
         run: |
           set -e
           python scripts/e2e_panel.py
           python scripts/e2e_panel_attach.py
           python scripts/e2e_state_paths.py
+          python scripts/e2e_update_window.py
           python scripts/e2e_audio.py
 
       - name: The wheel must contain its UI

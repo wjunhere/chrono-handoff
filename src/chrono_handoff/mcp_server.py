@@ -364,6 +364,8 @@ class ConductorServer:
         self.host = host
         self.port = port
         self._sock: socket.socket | None = None
+        #: Set by `shutdown` from another thread; checked by the accept loop.
+        self._stopping = False
 
     def _looks_like_conductor(self) -> bool:
         """Is something already *speaking the chrono protocol* on our port?
@@ -479,6 +481,22 @@ class ConductorServer:
             self.port = srv.getsockname()[1]
         self._sock = srv
 
+    def shutdown(self) -> None:
+        """Make `serve_forever` return, from another thread.
+
+        Closing the listening socket is not enough -- a thread blocked in
+        `accept()` does not reliably wake up for it (Linux in particular leaves
+        it waiting until the next connection arrives).  A throwaway connection
+        always does, so the flag is set first and the accept loop checks it.
+        """
+        self._stopping = True
+        if self.port:
+            try:
+                with socket.create_connection((self.host, self.port), timeout=0.5):
+                    pass
+            except OSError:
+                pass
+
     def serve_forever(self) -> None:
         import threading
 
@@ -490,6 +508,9 @@ class ConductorServer:
             try:
                 conn, _addr = srv.accept()
             except OSError:
+                return
+            if self._stopping:
+                conn.close()
                 return
             threading.Thread(target=self._handle, args=(conn,), name="chrono-ipc", daemon=True).start()
 
@@ -530,6 +551,13 @@ class ConductorServer:
             return {"pong": True, "pid": os.getpid(),
                     "version": __version__, "contract": CONTRACT_VERSION,
                     **c.stats()}
+        if method == "update_ready":
+            return c.update_ready()
+        if method == "stand_down":
+            # Answering this *is* what stops the daemon.  The reply is written
+            # first (the teardown inside `stand_down` is deferred), which is why
+            # this one may be called over the loop it is about to end.
+            return c.stand_down()
         if method == "submit":
             plan = plan_from_dict(dict(params.get("plan") or {}))
             run = c.submit(plan, paused=bool(params.get("paused", False)))

@@ -41,7 +41,7 @@ from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Any, Callable
 
-from . import __version__
+from . import CONTRACT_VERSION, __version__
 from .calibrate import Calibration, CalibrationStore, task_signature
 from .clock import CLOCK, Scheduler, now
 from .cue import AudioSink, BellAudio, MultiVisual, VisualCue, default_audio
@@ -141,6 +141,11 @@ class JournalWriter:
                     fh.close()
             except Exception:
                 pass
+
+
+#: How long a stand-down waits before tearing down the loop that is answering
+#: the request which asked for it (see `Conductor.stand_down`).
+_STAND_DOWN_GRACE_S = 0.25
 
 
 @dataclass
@@ -268,6 +273,10 @@ class Conductor:
         #: looked merely idle while a cue was actually running.
         self._armed_sinks: list[Callable[[Run], None]] = []
         self._panel_opener: Callable[[str], None] | None = None
+        #: Set by `stand_down`: no new work is accepted, and whatever owns this
+        #: process's event loop has been asked to leave (see `on_stand_down`).
+        self._standing_down = False
+        self._stand_down_hook: Callable[[], None] | None = None
         self._stop = threading.Event()
         self._poller: threading.Thread | None = None
         self._started = False
@@ -387,6 +396,10 @@ class Conductor:
         starts the countdown by themselves is not the same measurement as one
         who is told when to expect it.
         """
+        if self._standing_down:
+            raise RuntimeError(
+                "this conductor is standing down for an update and is not accepting new cues"
+            )
         if not plan.id:
             plan.id = f"run_{uuid.uuid4().hex[:8]}"
         run = Run(id=plan.id, plan=plan)
@@ -895,6 +908,100 @@ class Conductor:
         agnostic -- the daemon wires it to the HTTP panel, tests leave it unset.
         """
         self._panel_opener = fn
+
+    def on_stand_down(self, fn: Callable[[], None]) -> None:
+        """Register what to do when an update asks this conductor to leave.
+
+        A hook for the same reason as `on_panel_open`: a conductor does not own
+        a process loop, so `stand_down` can only *ask*.  The daemon wires this
+        to its own accept loop; anywhere else the answer says so honestly --
+        "I have stopped working, but nobody here can exit".
+        """
+        self._stand_down_hook = fn
+
+    # -- being stopped (the update path) ----------------------------------
+
+    def update_ready(self) -> dict[str, Any]:
+        """May this conductor be stopped right now?
+
+        The answer is the conductor's to give, not the updater's.  A cue is a
+        commitment made to a person at a deadline, so stopping in the middle of
+        one leaves somebody who was told to press at T holding a dead window --
+        which is the one failure this whole component exists to avoid.
+
+        Terminal runs do not block.  Once the human has answered (or the budget
+        expired) the commitment is over; the tail beats after GO are a courtesy
+        pulse for entrainment, not a promise, so they may be cut short.  That is
+        a judgement, not an oversight.
+        """
+        active: list[dict[str, Any]] = []
+        for run in self.runs.values():
+            if run.status in TERMINAL:
+                continue
+            ends_in = (
+                None if run.origin is None
+                else round(run.origin + run.plan.duration_s - CLOCK(), 3)
+            )
+            active.append({
+                "run_id": run.id,
+                "status": run.status.value,
+                "instruction": run.plan.instruction,
+                "ends_in_s": ends_in,
+            })
+        # A submitted-but-not-yet-started run has no end time at all, and
+        # inventing one would be worse than saying nothing: the honest answer is
+        # "wait for a number you can trust", not a plausible guess.
+        waits = [a["ends_in_s"] for a in active if a["ends_in_s"] is not None]
+        return {
+            "safe": not active and not self._standing_down,
+            "quiescent": self._standing_down,
+            "reason": (
+                "standing down for an update" if self._standing_down
+                else (f"{len(active)} cue(s) in flight: {active[0]['instruction']}" if active else "")
+            ),
+            "retry_in_s": (max(0.0, max(waits)) if waits else None) if active else 0.0,
+            "active": active,
+            # True because it is true by construction, not because anything was
+            # flushed here: `_emit` writes every event with its own `open`/`write`
+            # in the calling thread, so a run that is over is already on disk.
+            # (`JournalWriter` exists and is started, but nothing feeds it.)
+            "journal_flushed": True,
+            "version": __version__,
+            "contract": CONTRACT_VERSION,
+        }
+
+    def stand_down(self) -> dict[str, Any]:
+        """Stop accepting work and ask the process owning this loop to leave.
+
+        The hook is *scheduled*, not called here: the caller is answering a
+        request over the very loop that is about to be torn down, and tearing it
+        down synchronously would cut off the reply that says what happened.
+        """
+        if self._standing_down:
+            return {"ok": True, "quiescent": True, "already": True,
+                    "reason": "already standing down", "journal_flushed": True}
+        ready = self.update_ready()
+        if not ready["safe"]:
+            return {"ok": False, **ready}
+        self._standing_down = True
+        hook = self._stand_down_hook
+        if hook is None:
+            return {
+                "ok": True,
+                "quiescent": True,
+                "exiting": False,
+                "journal_flushed": True,
+                "note": ("no process loop is registered here; whoever asked must "
+                         "stop the process itself"),
+            }
+        threading.Timer(_STAND_DOWN_GRACE_S, hook).start()
+        return {
+            "ok": True,
+            "quiescent": True,
+            "exiting": True,
+            "journal_flushed": True,
+            "exit_in_s": _STAND_DOWN_GRACE_S,
+        }
 
     # -- client-facing payloads -------------------------------------------
 

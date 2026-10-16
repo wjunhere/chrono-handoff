@@ -303,6 +303,36 @@ chrono-handoff: a conductor is already answering on 127.0.0.1:8791.
 >
 > 所以 Windows 上默认已经是安全的，而 `SO_REUSEADDR` 才是危险的那个——它的 Windows 语义是"让我抢占已在使用的地址"，与 POSIX 正好相反。这正是曾经出现过**两个 conductor 同时监听同一端口、连接被随机分配**的原因。
 
+## 四点七、被更新叫停（cue 安全窗口）
+
+更新要停掉 conductor 才能换文件，但 cue 是**对一个人的、带截止时刻的承诺**：在他被告知
+“在 T 按”的中途重启，人就守着一个死掉的窗口——这是这个组件唯一要避免的失败。所以
+“现在能不能停”由 conductor 回答，不由更新器说了算：
+
+| 接口 | 语义 |
+|---|---|
+| `GET /api/update-ready` | `safe` / `reason` / `retry_in_s` / `active[]` / `journal_flushed` |
+| `POST /api/update-prepare` | 不安全就 **409**；安全则转入 quiescent（拒绝新 cue）并让本进程退出 |
+
+判定规则：**终态 run 不阻挡**。人已经应答（或预算耗尽）就意味着承诺结束；GO 之后的 tail
+拍是帮人跟拍的余韵，不是承诺，可以截断——这是判断，不是疏漏。
+
+`retry_in_s` 在“已提交但还没启动”时是 `null`：那时确实没有可算的结束时刻，编一个像样的
+数字比说不知道更糟。
+
+三个实现细节：
+
+1. **不是 kill，是请它自己走。** `stand_down` 让 daemon 的 accept 循环返回，剩下的收尾
+   复用 Ctrl-C / SIGTERM 那一套（一 teardown，而不是三条会各自漂移的）。
+2. **先回话再走。** teardown 被延后 250 ms——调用方正踩在即将关闭的循环上收答复，
+   同步拆会把这句答复一起切掉。
+3. **时钟在别的进程时走 IPC。** 面板挂在另一个 conductor 上时，它转发 `update_ready` /
+   `stand_down`，不自己猜（显示屏不该替别人的承诺作主）。若那个进程没有任何循环可退出，
+   答复会说 `exiting: false` 并注明“调用方得自己停进程”，而不是假装已处理。
+
+`journal_flushed` 恒为 `true`，**因为它是构造成立的**：`_emit` 在调用线程里 `open`/`write`
+每个事件，所以一个已经结束的 run 早就落了盘，并没有什么东西可 flush。
+
 ## 五、`tail_beats` 为什么默认是 6（不是可选装饰）
 
 这是 M1 实测暴露的问题，值得单独说。
@@ -449,6 +479,8 @@ python scripts/e2e_theme_drag.py   # 主题对比度 + 拖拽隔离（16 项）
 | POST | `/api/settings/reset` | 恢复默认 |
 | GET | `/api/calibration` | 已学到的偏移（供设置页显示） |
 | GET | `/api/next-cue-defaults` | 新提示的默认参数（来自设置） |
+| GET | `/api/update-ready` | 现在能不能停（更新用；见 §四点七） |
+| POST | `/api/update-prepare` | 转 quiescent 并让本进程退出；不安全时 409 |
 
 `/api/wait-armed` 是让面板**提前打开也有用**的关键：它长轮询等 cue，被武装的瞬间就拉时刻表。这样"打开面板"和"需要提示"解耦了。
 

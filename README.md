@@ -222,6 +222,7 @@ python scripts/e2e_theme_drag.py      # 主题对比度与拖拽隔离
 python scripts/e2e_daemon_window.py   # 一体化模式
 python scripts/e2e_split_mode.py      # 分离模式
 python scripts/e2e_state_paths.py     # 用户状态落点（与 cwd 无关）
+python scripts/e2e_update_window.py   # cue 安全窗口：不安全时 409 拒，安全时 daemon 自退
 python scripts/e2e_desktop_shell.py   # Tauri 桌面外壳（需先 cargo build）
 cd desktop/src-tauri && cargo test    # 外壳几何算式（边方向/夹紧/累计位移/窗口位置与恢复）
 python desktop/sidecar/build.py       # 冻结侧车并自检（--no-build 只自检）
@@ -231,7 +232,7 @@ python desktop/sidecar/build.py       # 冻结侧车并自检（--no-build 只�
 
 | job | 平台 | 跑什么 |
 |---|---|---|
-| `core` | Ubuntu / Windows / macOS | `basedpyright`、`chrono selftest`、四个无头套件（`e2e_panel`/`e2e_panel_attach`/`e2e_state_paths`/`e2e_audio`）、以及**拆开 wheel 确认 UI 资源在里面** |
+| `core` | Ubuntu / Windows / macOS | `basedpyright`、`chrono selftest`、五个无头套件（`e2e_panel`/`e2e_panel_attach`/`e2e_state_paths`/`e2e_update_window`/`e2e_audio`）、以及**拆开 wheel 确认 UI 资源在里面** |
 | `windows-ui` | Windows | `cargo build` + `cargo test`，以及需要桌面会话的六个窗口套件（含 `e2e_desktop_shell`） |
 | `sidecar` | Ubuntu / Windows / macOS | 打包冻结侧车并跑它的**会失败**的自检：能力对等、PE subsystem、冻结内 `selftest`、真的把面板 serve 出来并**逐字节比对** |
 | `shell-off-windows` | Ubuntu / macOS | 外壳能不能在 Windows 之外**编译**并通过几何算式测试 |

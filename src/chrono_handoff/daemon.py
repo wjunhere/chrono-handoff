@@ -86,6 +86,12 @@ def run_daemon(
     port = server.port
     write_pidfile(port, {"audio": conductor.audio.name, "journal_dir": str(conductor.journal_dir)})
 
+    # One stand-down path for Ctrl-C, SIGTERM and an update: the update path's
+    # hook just makes this loop return, and the `finally` below does the rest.
+    # Three separate teardowns would drift, and the one nobody exercises is the
+    # one that loses a journal.
+    conductor.on_stand_down(server.shutdown)
+
     def _shutdown(_signum: int, _frame: object) -> None:
         if panel_srv is not None:
             panel_srv.stop()

@@ -156,6 +156,25 @@ class RemoteConductor:
         except Exception:
             return {}
 
+    # -- being stopped (the update path) ----------------------------------
+
+    def update_ready(self) -> dict[str, Any]:
+        """Forwarded, not answered locally.
+
+        The clock is in another process, so only that process can say whether a
+        cue is in flight.  Answering from here would be a display process
+        guessing about somebody else's commitments.
+        """
+        return self._c.call("update_ready")
+
+    def stand_down(self) -> dict[str, Any]:
+        """Ask the *other* process's conductor to stop accepting work and leave.
+
+        Its reply comes back before it goes, so the caller learns what happened
+        rather than watching a socket close.
+        """
+        return self._c.call("stand_down")
+
     # -- calibration (read-only from the UI side) --------------------------
 
     @property

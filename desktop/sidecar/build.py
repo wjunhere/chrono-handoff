@@ -307,6 +307,17 @@ def _check_serves(built: Path, env: dict[str, str], findings: list[str]) -> None
                 print(f"      daemon: {line}", flush=True)
             return
         _line("serves", "/api/health", "200")
+        # The contract's surface, not just its files: a bundle built before this
+        # endpoint existed 404s here, which is the "edited Python, forgot to
+        # rebuild" case that the version and contract numbers cannot see (they
+        # do not change for an addition).
+        status, _ = _get(f"{base}/api/update-ready")
+        _line("serves", "/api/update-ready", str(status))
+        if status != 200:
+            findings.append(
+                f"the bundle does not answer /api/update-ready (HTTP {status}): it predates "
+                "the update window, so this is a stale snapshot even though its version matches"
+            )
         for path, source in SERVED:
             want = source.read_bytes()
             try:
