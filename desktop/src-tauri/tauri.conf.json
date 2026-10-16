@@ -15,7 +15,7 @@
   },
   "plugins": {
     "updater": {
-      "pubkey": "",
+      "pubkey": "untrusted comment: minisign public key: F97ECAAAA5BAAD1A\nRWQarbqlqsp++RWSdkUjLGxa55q2h/xEhuTVVcPFToQRYKMTU2LTxIlg",
       "endpoints": [
         "https://github.com/wjunhere/chrono-handoff/releases/latest/download/latest.json"
       ],
