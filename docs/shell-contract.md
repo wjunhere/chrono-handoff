@@ -163,7 +163,7 @@ panel.window_hooks.update({
 
 ## 五、新增一个宿主
 
-1. 在 `SHELL_BACKENDS` 里加一行探针，返回一个带上述 13 个方法的对象。
+1. 在 `SHELL_BACKENDS` 里加一行探针，返回一个带上述 16 个方法的对象。
 2. 照 §三 逐条实现；尤其 `update_*` 的累计位移语义与 DPI 换算。
 3. 决定 §二之二 那一行：宿主是**随包**页面，还是指向 conductor 的 URL。
    前者需要在初始化脚本里注入 `__CHRONO_API_BASE__`（和 `__CHRONO_SHELL__`），
