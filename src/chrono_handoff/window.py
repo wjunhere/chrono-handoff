@@ -555,6 +555,30 @@ class CueWindow:
             print(f"[page] {text}", flush=True)
             return {"ok": True}
 
+        def _update_answer(op: str) -> dict[str, Any]:
+            """The seam's three update operations, answered rather than omitted.
+
+            This host has no updater -- auto-update is a property of the desktop
+            shell's install, not of a pywebview window that may be running from a
+            source checkout.  The seam's rule is that a host either implements an
+            operation or says it cannot (see docs/shell-contract.md); a page that
+            calls into nothing finds out by breaking, and "the button does
+            nothing" is the failure mode this contract exists to prevent.
+            """
+            return {
+                "phase": "unsupported",
+                "detail": f"{op}: pywebview 宿主没有更新器；自动更新属于桌面外壳的安装形态",
+            }
+
+        def update_status() -> dict[str, Any]:
+            return _update_answer("update_status")
+
+        def update_check() -> dict[str, Any]:
+            return _update_answer("update_check")
+
+        def update_install() -> dict[str, Any]:
+            return _update_answer("update_install")
+
         window.expose(
             apply_theme,
             page_note,
@@ -569,6 +593,9 @@ class CueWindow:
             begin_drag,
             update_drag,
             end_drag,
+            update_status,
+            update_check,
+            update_install,
         )
 
     def _flash_visible(self) -> None:

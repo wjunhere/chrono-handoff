@@ -284,6 +284,7 @@ Windows 11 / CPython 3.13，详见 [`docs/implementation-notes.md`](implementati
 | [`docs/implementation-notes.md`](docs/implementation-notes.md) | 实现细节与实测数据 |
 | [`docs/shell-contract.md`](docs/shell-contract.md) | 面板 ↔ 窗口宿主契约（换壳时唯一要改的地方） |
 | [`docs/desktop-shell.md`](docs/desktop-shell.md) | Tauri 2 桌面外壳：现状、阻塞点与两条出路 |
+| [`docs/update.md`](docs/update.md) | 自动更新：分工、cue 安全窗口、签名与发版 |
 | [`docs/m1.md`](docs/m1.md) | M1 测量实验方法 |
 | [`docs/theory.md`](docs/theory.md) | 理论依据（时间触发 / 人机节拍同步） |
 | [`docs/problem.md`](docs/problem.md) | 问题定义与量化 |

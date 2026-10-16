@@ -21,6 +21,6 @@ __version__ = "0.1.0"
 #:
 #: Declared in exactly two places -- ``/api/health`` (HTTP) and ``ping`` (IPC) --
 #: both from this constant.
-CONTRACT_VERSION = 1
+CONTRACT_VERSION = 2
 
 __all__ = ["CONTRACT_VERSION", "__version__"]

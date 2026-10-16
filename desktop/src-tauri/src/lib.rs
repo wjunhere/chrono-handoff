@@ -26,7 +26,7 @@ use std::time::Duration;
 
 use serde::Serialize;
 use tauri::webview::PageLoadEvent;
-use tauri::{LogicalPosition, LogicalSize, PhysicalPosition, Position, Size, WebviewUrl, WebviewWindow, WebviewWindowBuilder, WindowEvent};
+use tauri::{LogicalPosition, LogicalSize, Manager, PhysicalPosition, Position, Size, WebviewUrl, WebviewWindow, WebviewWindowBuilder, WindowEvent};
 
 ///: Panel port served by `chrono daemon` (see webui.DEFAULT_PANEL_PORT).
 const DEFAULT_PANEL_PORT: u16 = 8790;
@@ -238,7 +238,7 @@ fn current_geometry(window: &tauri::WebviewWindow) -> Option<SavedGeometry> {
 /// Must equal `CONTRACT_VERSION` in `chrono_handoff/__init__.py`; the sidecar
 /// build's self-check compares the frozen app's declaration against the source
 /// checkout's, so the two cannot drift without failing a build.
-const CONTRACT: u64 = 1;
+const CONTRACT: u64 = 2;
 
 /// Whether a conductor that declared `conductor` is one this shell may use.
 ///
@@ -1002,6 +1002,8 @@ fn run_page_selftest(window: WebviewWindow) {
         // conductor from another build -- is one a working install never has.
         std::thread::sleep(Duration::from_millis(300));
         let _ = window.eval("__chronoPageTest.reportGuard()");
+        std::thread::sleep(Duration::from_millis(400));
+        let _ = window.eval("__chronoPageTest.reportUpdate()");
     });
 }
 
@@ -1069,9 +1071,288 @@ fn report_fatal(msg: &str) {
 }
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
+/// The public half of the key that signs releases, compiled in on purpose.
+///
+/// It cannot come from a config file: a key that anything able to write a file
+/// could swap is not a signature, and this signature is the only thing between a
+/// remote server and a program that can write bytes to a serial port.  Tauri
+/// refuses to disable verification, so an empty value here means "this build
+/// cannot update", never "this build updates without checking".
+const UPDATE_PUBKEY: &str = match option_env!("CHRONO_UPDATE_PUBKEY") {
+    Some(k) => k,
+    None => "",
+};
+
+/// Where the update manifest lives: one static JSON per channel (see
+/// `docs/update.md`).  `{{target}}`/`{{arch}}` are Tauri's own substitutions.
+const UPDATE_ENDPOINT: &str =
+    "https://github.com/wjunhere/chrono-handoff/releases/latest/download/latest.json";
+
+/// What the updater is doing, and the last thing that happened to it.
+///
+/// Deliberately a plain serialisable value: the page polls it through the host
+/// seam, so "what is it doing" has one answer in one place instead of a spinner
+/// that is only as truthful as the last request.
+#[derive(Default, Clone, serde::Serialize)]
+struct UpdateState {
+    /// ``idle`` | ``checking`` | ``downloading`` | ``ready`` | ``unconfigured``
+    /// | ``error``.  ``ready`` means downloaded and waiting for a human moment.
+    phase: String,
+    version: Option<String>,
+    notes: Option<String>,
+    progress: Option<f64>,
+    error: Option<String>,
+    /// Message to show the operator, already in words (e.g. why an install was
+    /// refused).  Kept next to the state so the page never has to invent one.
+    detail: Option<String>,
+}
+
+impl UpdateState {
+    fn unconfigured() -> Self {
+        Self {
+            phase: "unconfigured".into(),
+            detail: Some(
+                "this build has no update key compiled in, so it cannot update itself.\n\
+                 Generate one:  cargo tauri signer generate -w <path outside the repo>\n\
+                 Then build with CHRONO_UPDATE_PUBKEY set to its public half."
+                    .into(),
+            ),
+            ..Default::default()
+        }
+    }
+}
+
+/// Whether an install may proceed, from the conductor's `/api/update-ready`.
+///
+/// Pure, so `cargo test` can drive the branch that matters: an updater that
+/// restarts the window mid-cue leaves somebody who was told to press at T
+/// holding a dead window.  Anything other than an explicit `safe: true` is a
+/// refusal -- a missing field, an unparseable answer, and a conductor that has
+/// already stood down all mean "not now", never "probably fine".
+fn install_decision(ready: &serde_json::Value) -> Result<(), String> {
+    match ready.get("safe") {
+        Some(serde_json::Value::Bool(true)) => Ok(()),
+        _ => {
+            let reason = ready
+                .get("reason")
+                .and_then(|r| r.as_str())
+                .unwrap_or("the conductor did not say it was safe to stop");
+            let wait = ready.get("retry_in_s").and_then(|r| r.as_f64());
+            let when = match wait {
+                Some(s) if s > 0.0 => format!("  It should be free in about {s:.0}s."),
+                _ => String::new(),
+            };
+            Err(format!("not installing yet: {reason}.{when}"))
+        }
+    }
+}
+
+/// Where the updater keeps its state, shared with the async tasks.
+///
+/// `Update` is `Clone`, so the checked-but-not-installed one can live here -- and
+/// it has to: `install` needs the object that `check` returned, because that is
+/// what carries the announced signature.
+#[derive(Default)]
+struct UpdateSlot {
+    state: UpdateState,
+    pending: Option<tauri_plugin_updater::Update>,
+}
+
+/// `Arc` because Tauri's managed state is shared with the spawned tasks.
+type UpdateHandle = std::sync::Arc<std::sync::Mutex<UpdateSlot>>;
+
+/// The updater for this build, or `None` when no key was compiled in.
+fn updater(app: &tauri::AppHandle) -> Option<tauri_plugin_updater::Updater> {
+    use tauri_plugin_updater::UpdaterExt;
+
+    if UPDATE_PUBKEY.is_empty() {
+        return None;
+    }
+    app.updater_builder()
+        .pubkey(UPDATE_PUBKEY)
+        .endpoints(vec![UPDATE_ENDPOINT.parse().ok()?])
+        .ok()?
+        // Last chance to be polite: on Windows the plugin quits the app itself
+        // once the installer is launched, and quitting with the conductor still
+        // holding chrono-core.exe open is how an update fails halfway.
+        .on_before_exit(|| {
+            println!("[shell] exiting for an update; asking the conductor to stand down");
+            let _ = http_post_json(&format!("{}/api/update-prepare", api_base()),
+                                   &serde_json::json!({}));
+        })
+        .build()
+        .ok()
+}
+
+#[tauri::command]
+fn update_status(app: tauri::AppHandle, slot: tauri::State<'_, UpdateHandle>) -> UpdateState {
+    let mut guard = slot.lock().unwrap();
+    if guard.state.phase.is_empty() {
+        // A status query must never answer with nothing: "no check has run yet"
+        // and "this build cannot update at all" are different situations, and
+        // only one of them is fixable by pressing the button.
+        guard.state = if updater(&app).is_none() {
+            UpdateState::unconfigured()
+        } else {
+            UpdateState { phase: "idle".into(), detail: Some("no check yet".into()), ..Default::default() }
+        };
+    }
+    guard.state.clone()
+}
+
+/// Ask the update server, in the background.
+///
+/// Not `async` in the command body: the page polls `update_status`, and a command
+/// that blocks on a network round trip makes the settings sheet look broken on a
+/// slow connection.  Nothing may require a check to have succeeded.
+#[tauri::command]
+fn update_check(app: tauri::AppHandle, slot: tauri::State<'_, UpdateHandle>) -> UpdateState {
+    start_check(&app, slot.inner())
+}
+
+/// Begin a check in the background.  Shared by the page's button and the check
+/// the shell does once per launch.
+fn start_check(app: &tauri::AppHandle, handle: &UpdateHandle) -> UpdateState {
+    let handle = handle.clone();
+    let app = app.clone();
+    {
+        let mut guard = handle.lock().unwrap();
+        if guard.state.phase == "checking" || guard.state.phase == "downloading" {
+            return guard.state.clone();
+        }
+        if updater(&app).is_none() {
+            guard.state = UpdateState::unconfigured();
+            return guard.state.clone();
+        }
+        guard.state.phase = "checking".into();
+        guard.state.error = None;
+        guard.state.detail = None;
+    }
+    let announced = handle.lock().unwrap().state.clone();
+    tauri::async_runtime::spawn(async move {
+        let found = match updater(&app) {
+            Some(up) => up.check().await,
+            None => Ok(None),
+        };
+        let mut guard = handle.lock().unwrap();
+        match found {
+            Ok(Some(update)) => {
+                guard.state.phase = "ready".into();
+                guard.state.version = Some(update.version.clone());
+                guard.state.notes = update.body.clone();
+                println!("[shell] update available: {}", update.version);
+                guard.pending = Some(update);
+            }
+            Ok(None) => {
+                guard.state.phase = "idle".into();
+                guard.state.version = None;
+                guard.pending = None;
+                guard.state.detail = Some("already up to date".into());
+            }
+            Err(e) => {
+                // Offline is normal -- this tool is documented for isolated
+                // networks -- so a failure is reported, never raised, and never
+                // a dialog.
+                guard.state.phase = "error".into();
+                guard.state.error = Some(e.to_string());
+                println!("[shell] update check failed: {e}");
+            }
+        }
+        guard.state.clone()
+    });
+    announced
+}
+
+/// Install the update that has been downloaded, once the conductor agrees.
+///
+/// The order is the whole point: the conductor is asked first, then asked to
+/// leave, then *measured* to be gone.  Installing while it still holds
+/// `chrono-core.exe` open is the difference between an update and a half-updated
+/// install.
+#[tauri::command]
+fn update_install(slot: tauri::State<'_, UpdateHandle>) -> Result<UpdateState, String> {
+    let handle = slot.inner().clone();
+    let update = handle
+        .lock()
+        .unwrap()
+        .pending
+        .clone()
+        .ok_or_else(|| "no update is ready; run update_check first".to_string())?;
+
+    let (host, port) = conductor_host_port();
+    let base = api_base();
+    let ready = http_get_json(&format!("{base}/api/update-ready"))
+        .map_err(|e| format!("cannot ask the conductor whether it is safe to stop: {e}"))?;
+    install_decision(&ready)?;
+
+    if http_post_json(&format!("{base}/api/update-prepare"), &serde_json::json!({})).is_err() {
+        println!("[shell] the conductor did not acknowledge the stand-down request");
+    }
+    // Measured, not inferred: the reply says "standing down", this says whether
+    // it actually did.  A conductor that is still answering after the deadline is
+    // a refusal, not a reason to try anyway.
+    let deadline = std::time::Instant::now() + Duration::from_secs(15);
+    while std::time::Instant::now() < deadline && panel_answers(&host, port) {
+        std::thread::sleep(Duration::from_millis(200));
+    }
+    if panel_answers(&host, port) {
+        return Err(
+            "the conductor is still running, so the update would have to overwrite a file it \
+             holds open.  Nothing was installed."
+                .to_string(),
+        );
+    }
+
+    {
+        let mut guard = handle.lock().unwrap();
+        guard.state.phase = "downloading".into();
+        guard.state.progress = Some(0.0);
+        guard.state.detail = None;
+    }
+    let reported = handle.lock().unwrap().state.clone();
+    let progress_handle = handle.clone();
+    tauri::async_runtime::spawn(async move {
+        let on_chunk = move |chunk: usize, total: Option<u64>| {
+            if let (Ok(mut guard), Some(total)) = (progress_handle.lock(), total) {
+                if total > 0 {
+                    let done = guard
+                        .state
+                        .progress
+                        .map(|p| p * total as f64)
+                        .unwrap_or(0.0)
+                        + chunk as f64;
+                    guard.state.progress = Some((done / total as f64).clamp(0.0, 1.0));
+                }
+            }
+        };
+        let result = update.download_and_install(on_chunk, || {}).await;
+        let mut guard = handle.lock().unwrap();
+        match result {
+            // On Windows this is not reached: the plugin quits the app once the
+            // installer is running, and the installer restarts it.  The line is
+            // for macOS/Linux, where a relaunch is the caller's job.
+            Ok(()) => {
+                guard.state.phase = "installing".into();
+                guard.state.detail = Some("installed; restart to run it".into());
+            }
+            Err(e) => {
+                guard.state.phase = "error".into();
+                guard.state.error = Some(e.to_string());
+                println!("[shell] update install failed: {e}");
+            }
+        }
+    });
+    Ok(reported)
+}
+
 pub fn run() {
     tauri::Builder::default()
+        // Registered even when no key was compiled in: `updater_builder()` reads
+        // this plugin's managed state, and `updater()` in this file is the only
+        // thing that decides whether a check may happen at all.
+        .plugin(tauri_plugin_updater::Builder::new().build())
         .manage(Geometry::default())
+        .manage(UpdateHandle::default())
         .invoke_handler(tauri::generate_handler![
             minimize,
             page_note,
@@ -1086,6 +1367,9 @@ pub fn run() {
             begin_resize,
             update_resize,
             end_resize,
+            update_status,
+            update_check,
+            update_install,
         ])
         .setup(|app| {
             let (host, port) = conductor_host_port();
@@ -1244,6 +1528,20 @@ pub fn run() {
                 _ => {}
             });
 
+            // Once per launch, off the startup path: a few seconds in, in its own
+            // thread, and nothing depends on it succeeding.  This tool is
+            // documented for isolated networks, so a failed check is a log line
+            // and a phrase in the settings sheet -- never a dialog, and never a
+            // delay on the way to a cue.  CHRONO_NO_UPDATE_CHECK=1 turns it off.
+            if std::env::var("CHRONO_NO_UPDATE_CHECK").as_deref() != Ok("1") {
+                let check_app = app.handle().clone();
+                let check_handle = app.state::<UpdateHandle>().inner().clone();
+                std::thread::spawn(move || {
+                    std::thread::sleep(Duration::from_secs(3));
+                    start_check(&check_app, &check_handle);
+                });
+            }
+
             let _ = window;
             Ok(())
         })
@@ -1261,8 +1559,8 @@ pub fn run() {
 
 #[cfg(test)]
 mod tests {
-    use super::{contract_ok, min_size, resized_rect, to_logical, visible_origin, Monitor,
-                SavedGeometry, CONTRACT};
+    use super::{contract_ok, install_decision, min_size, resized_rect, to_logical, visible_origin,
+                Monitor, SavedGeometry, CONTRACT};
 
     const PRIMARY: Monitor = Monitor { x: 0.0, y: 0.0, w: 1920.0, h: 1067.0 };
 
@@ -1395,5 +1693,32 @@ mod tests {
         // contract.  Treating that as agreement is how a window silently writes
         // settings to a conductor that drops them on the floor.
         assert!(!contract_ok(None));
+    }
+
+    #[test]
+    fn an_install_needs_an_explicit_yes() {
+        // The branch that matters: an update that restarts the window mid-cue
+        // leaves somebody who was told to press at T holding a dead window.
+        assert!(install_decision(&serde_json::json!({"safe": true, "retry_in_s": 0.0})).is_ok());
+
+        let busy = serde_json::json!({
+            "safe": false, "reason": "1 cue(s) in flight: press the button", "retry_in_s": 12.4
+        });
+        let why = install_decision(&busy).unwrap_err();
+        assert!(why.contains("12s"), "the wait should be in the message: {why}");
+        assert!(why.contains("press the button"), "and so should the cue: {why}");
+
+        // Everything below is "not now", never "probably fine": a conductor
+        // that answered without the field, an answer that is not an object, a
+        // `safe` that is not a boolean, and no answer at all.
+        for not_a_yes in [
+            serde_json::json!({}),
+            serde_json::json!({"safe": "true"}),
+            serde_json::json!({"quiescent": true}),
+            serde_json::json!(null),
+            serde_json::json!([]),
+        ] {
+            assert!(install_decision(&not_a_yes).is_err(), "{not_a_yes} was read as consent");
+        }
     }
 }

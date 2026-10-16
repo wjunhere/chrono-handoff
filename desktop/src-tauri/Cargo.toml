@@ -27,6 +27,14 @@ window-vibrancy = "0.8.1"
 # to the conductor the same way any other client does, so the panel process
 # stays the single writer of settings.json.
 ureq = { version = "3", features = ["json"] }
+# Auto-update.  `default-features = false` is not a size choice: the default
+# feature set includes `zip`, and every version of the `zip` crate the index
+# offers is yanked, so `cargo add tauri-plugin-updater` cannot resolve at all
+# (tried 2.4 through 2.14).  Dropping the feature drops the dependency, and it is
+# not needed here anyway -- on Windows the updater *runs the NSIS installer*, it
+# does not unpack anything.  If a future platform needs archive extraction, this
+# is the line to revisit, not the resolver output.
+tauri-plugin-updater = { version = "2.14", default-features = false, features = ["rustls-tls"] }
 
 
 # Read the optimization guideline for more details: https://tauri.app/concept/size/#cargo-configuration

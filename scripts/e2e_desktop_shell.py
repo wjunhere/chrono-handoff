@@ -491,9 +491,9 @@ def phase_page_pointer() -> None:
         text = ""
         for _ in range(80):
             text = log_path.read_text(encoding="utf-8", errors="replace")
-            # The guard report is emitted last, so waiting for it means every
-            # probe has finished rather than merely started.
-            if "guard unanswered=" in text:
+            # The guard report is emitted near the end, and the update report
+            # after it, so waiting for the last one means every probe finished.
+            if "update phase=" in text:
                 break
             if proc.poll() is not None:
                 break
@@ -510,11 +510,17 @@ def phase_page_pointer() -> None:
             # The version guard, in the real page, with the real conductor: the
             # live verdict has to be "this conductor is mine", and the branches a
             # working install cannot reach are driven directly.
-            ("the page accepts the conductor it is running with", 'guard live note="" contract=1'),
+            ("the page accepts the conductor it is running with", 'guard live note="" contract=2'),
             ("the version guard accepts a matching contract", 'guard same-build=""'),
             ("...refuses a contract from another build", 'guard other-build="界面与 conductor 不是同一次构建'),
             ("...passes a not-writable reason through", 'guard not-writable="why-not"'),
             ("...refuses a conductor that declares none", 'guard unanswered="界面与'),
+            # The update seam, in the real shell: this build has no update key
+            # compiled in, and the honest answer to that is a state which says so
+            # -- never a silent nothing, and never a button that looks like it
+            # worked.  Driven through the page, so this covers the whole path.
+            ("the update seam reports honestly when it cannot update",
+             'update phase=unconfigured has-detail=true'),
         ):
             check(label, fragment in text, page_line(fragment.split(" ok")[0]))
     finally:

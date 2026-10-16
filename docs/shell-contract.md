@@ -92,7 +92,27 @@ const SHELL_BACKENDS = [
 `CONTRACT`。漏改会被 `desktop/sidecar/build.py` 的自检拦住（它读这两个常量并与 Python
 包比），不会靠人记得。
 
-## 三、操作清单（13 个）
+## 二之四、更新是宿主的责任，页面只能报告和请求
+
+谁能更新取决于宿主：Tauri 外壳装在一份安装包里，它有更新器；pywebview 窗口可能跑在源码检出上，
+它没有。所以 seam 里加三个操作（见 §三），页面**不下载任何东西**：
+
+| 操作 | 语义 |
+|---|---|
+| `update_status()` | 当前状态（`idle`/`checking`/`downloading`/`ready`/`installing`/`error`/`unconfigured`/`unsupported`） |
+| `update_check()` | 立即检查（后台跑，立即返回当前状态；页面轮询 `update_status`） |
+| `update_install()` | 请宿主安装并重启。**是否允许停**由 conductor 回答，宿主在安装前问它 |
+
+两个规矩：
+
+1. **`unconfigured` / `unsupported` 要说出来，不能什么也不做。** 一个按下去没反应的按钮，和
+   “这个构建没有编译进更新公钥”是两回事，而前者会被当成 bug 反复排查。未实现的操作也必须
+   **作答**（pywebview 就是这样）。
+2. **安装前必须先问 conductor。** 更新器在 cue 中途重启，就把人留在了一个已经死掉的窗口前——
+   这比晚一小时更新贵得多。判定规则与两个 HTTP 接口见 `component.md` §四点七，完整设计见
+   `docs/update.md`。
+
+## 三、操作清单（16 个）
 
 `args` 全部为可选；除 `page_note` 外返回值不做约定，页面不读。
 
@@ -111,6 +131,9 @@ const SHELL_BACKENDS = [
 | `begin_resize(edge)` | 开始缩放 | `edge ∈ {n, s, e, w, ne, nw, se, sw}`；宿主记录 `(x,y,w,h)` 基线 |
 | `update_resize(dx, dy)` | 缩放 | 同上：**累计位移**。宿主按 edge 决定哪些边动、并对左下/右上补原点偏移 |
 | `end_resize()` | 结束缩放 | 落盘尺寸 |
+| `update_status()` | 更新器当前状态 | 永不返回空：没检查过、没配密钥、宿主不支持都是**不同**的答案 |
+| `update_check()` | 立即检查更新 | 后台跑、立即返回；离线是常态，只报告不弹框 |
+| `update_install()` | 安装并重启 | 先问 conductor 能不能停；被拒时返回原因与等待时间，**不安装** |
 
 四个跨宿主都容易踩的坑：
 
@@ -153,5 +176,6 @@ panel.window_hooks.update({
 
 - 设置、健康、校准、计划、事件、按键 —— 走 HTTP。
 - 服务端侧的窗口反应 —— 走 `window_hooks`，不要加 seam 方法。
-- 任何「为了让某个框架跑起来」而加的通用性 —— 契约按 §三 这 13 条封闭。
+- 任何「为了让某个框架跑起来」而加的通用性 —— 契约按 §三 这 16 条封闭。
   改这个列表（加、减、改语义）就是**改契约**，同步 `CONTRACT_VERSION`（见 §二之三）。
+  加 `update_*` 那次就是这么做的：13 → 16 条，版本 1 → 2。

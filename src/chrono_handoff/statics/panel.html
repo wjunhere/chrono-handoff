@@ -564,6 +564,18 @@
         <div class="f"><label>应用学习到的偏移</label><input type="checkbox" id="s-calo"></div>
         <div class="note" id="cal-info">--</div>
       </div>
+      <div class="grp">
+        <h3>更新</h3>
+        <div class="note" id="upd-state">--</div>
+        <div class="row">
+          <button class="ghost" id="upd-check">检查更新</button>
+          <button class="ghost" id="upd-install" hidden>安装并重启</button>
+        </div>
+        <div class="note">
+          有 cue 正在进行时不会安装：那时重启会把人留在一个已经死掉的窗口前。
+          检查与下载是自动的，<b>安装</b>等你按一下。
+        </div>
+      </div>
       <div class="row">
         <button class="ghost" id="s-save">保存</button>
         <button class="ghost" id="s-reset">恢复默认</button>
@@ -1082,6 +1094,21 @@ function waitArmed() {
 /* ------------------------------------------------------------------ boot */
 $("press").addEventListener("pointerdown", doPress);
 $("resync").addEventListener("click", async () => { await syncClock(); if (S.sched) scheduleCue(); });
+$("upd-check").addEventListener("click", async () => {
+  if (!shellBackend()) { renderUpdate({phase: "unsupported"}); return; }
+  renderUpdate(await shellCall("update_check"));
+  // The command answers immediately and the work happens in the background, so
+  // poll while there is something to watch and stop as soon as there is not.
+  const t = setInterval(async () => {
+    const st = await refreshUpdate();
+    if (!st || (st.phase !== "checking" && st.phase !== "downloading")) clearInterval(t);
+  }, 800);
+});
+$("upd-install").addEventListener("click", async () => {
+  try { renderUpdate(await shellCall("update_install")); }
+  catch (e) { renderUpdate({phase: "error", detail: String((e && e.message) || e)}); }
+});
+
 $("start").addEventListener("click", async () => {
   // Refuse before asking the conductor to start a grid this page cannot
   // interpret.  `healthNote` is set by the first pollHealth, which main() kicks
@@ -1184,6 +1211,7 @@ const TAURI_PARAMS = {
   begin_resize: ["edge"], set_on_top: ["value"], set_opacity: ["value"],
   apply_theme: ["theme"], update_drag: ["dx", "dy"], update_resize: ["dx", "dy"],
   end_resize: [], page_note: ["text"],
+  update_status: [], update_check: [], update_install: [],
 };
 
 function tauriShell() {
@@ -1263,7 +1291,7 @@ let healthNote = "";
 let healthContract = null;
 //: The contract this page speaks.  Must equal CONTRACT_VERSION in
 //: chrono_handoff/__init__.py; build.py's version gate compares them.
-const PAGE_CONTRACT = 1;
+const PAGE_CONTRACT = 2;
 
 /* Why this page must not drive the conductor that just answered.
 
@@ -1381,6 +1409,44 @@ function flash(msg) {
 
 function setSettings(open) {
   document.body.classList.toggle("settings-open", !!open);
+  if (open) refreshUpdate();
+}
+
+/* ------------------------------------------------------------- updates */
+/* The host owns updating the app, so the page only reports and asks.  Whether
+   it may stop anything is the *conductor's* answer, asked by the shell right
+   before it installs: a restart in the middle of a cue leaves somebody who was
+   told to press at T holding a dead window.  See docs/shell-contract.md §二之四. */
+function renderUpdate(s) {
+  const el = $("upd-state"), inst = $("upd-install");
+  if (!el) return;
+  const st = s || {};
+  const lines = [];
+  switch (st.phase) {
+    case "idle":         lines.push(st.detail || "已是最新版本"); break;
+    case "unconfigured": lines.push("此构建没有编译进更新公钥，无法自我更新"); break;
+    case "checking":     lines.push("正在检查…"); break;
+    case "downloading":  lines.push("正在下载 " + Math.round((st.progress || 0) * 100) + "%"); break;
+    case "ready":        lines.push("有新版 " + (st.version || "?") + "，可以安装"); break;
+    case "installing":   lines.push(st.detail || "已安装"); break;
+    case "unsupported":  lines.push("此窗口宿主不支持自动更新"); break;
+    case "error":        lines.push("更新失败：" + (st.error || "?")); break;
+    default:             lines.push(st.phase || "未知状态");
+  }
+  // The shell's own wording wins when it has any: it is the side that knows why
+  // (offline, refused because a cue is armed, key missing) and this page does not.
+  if (st.detail && st.detail !== lines[0]) lines.push(st.detail);
+  el.textContent = lines.join(" · ");
+  if (inst) inst.hidden = st.phase !== "ready";
+}
+
+async function refreshUpdate() {
+  if (!shellBackend()) { renderUpdate({phase: "unsupported"}); return null; }
+  let st;
+  try { st = await shellCall("update_status"); }
+  catch (e) { st = {phase: "error", error: String((e && e.message) || e)}; }
+  renderUpdate(st);
+  return st;
 }
 
 /* ---------------------------------------------------- conductor liveness */
@@ -1748,6 +1814,18 @@ function wireShell() {
       say("not-writable=" + j(contractNote(PAGE_CONTRACT, false, "why-not")));
       say("unanswered=" + j(contractNote(null, true, "")));
       return PAGE_CONTRACT;
+    },
+
+    // Ask the host what it knows about updates, and report it through the log.
+    // Asynchronous because the path may go all the way to a network check; what
+    // a test reads is the report either way.
+    async reportUpdate() {
+      const say = (m) => { try { shellCall("page_note", "update " + m); } catch (_) {} };
+      if (!shellBackend()) { say("phase=no-host"); return; }
+      try {
+        const st = await shellCall("update_status");
+        say("phase=" + ((st && st.phase) || "(none)") + " has-detail=" + !!(st && st.detail));
+      } catch (e) { say("phase=threw " + String((e && e.message) || e)); }
     },
   };
 
