@@ -237,6 +237,18 @@ def cmd_doctor(args: argparse.Namespace) -> int:
     cal = CalibrationStore()
     rows.append(("calibration", str(cal.path), f"{len(cal.all())} signature(s)"))
 
+    if getattr(args, "json", False):
+        # Machine-readable, so a build check can compare this app's capabilities
+        # against the source checkout's without scraping the aligned columns
+        # below.  Deliberately ASCII (json's default): the reader may be a pipe
+        # whose encoding is the local ANSI codepage, not UTF-8.
+        print(json.dumps({
+            "version": __version__,
+            "rows": [{"name": n, "value": v, "note": d} for n, v, d in rows],
+            "problems": problems,
+        }))
+        return 1 if problems else 0
+
     width = max(len(r[0]) for r in rows)
     print(f"chrono-handoff {__version__} -- environment")
     for name, value, note in rows:
@@ -901,6 +913,7 @@ def build_parser() -> argparse.ArgumentParser:
 
     d = sub.add_parser("doctor", help="check machine capabilities")
     net(d)
+    d.add_argument("--json", action="store_true", help="machine-readable report for scripts")
     d.set_defaults(fn=cmd_doctor)
 
     st = sub.add_parser("selftest", help="verify the machinery without a human")

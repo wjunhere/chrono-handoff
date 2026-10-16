@@ -53,8 +53,9 @@ jobs:
 
       - name: Type check
         # 0 error 是硬要求（standard 模式）。这条在任何平台上都成立，
-        # 且比单测便宜得多，所以放在最前面。
-        run: basedpyright src scripts
+        # 且比单测便宜得多，所以放在最前面。desktop/sidecar 也在这里面：
+        # 那是构建链上的一环，而且它现在含一个自己解析 PE 头的检查。
+        run: basedpyright src scripts desktop/sidecar
 
       - name: Self-check
         run: chrono selftest
@@ -128,6 +129,38 @@ jobs:
           python scripts/e2e_split_mode.py
           python scripts/e2e_daemon_window.py
           python scripts/e2e_desktop_shell.py
+
+  sidecar:
+    name: frozen conductor (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest, macos-latest]
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+
+      - name: Install
+        # .[sidecar] 而不是 .[all]：外壳的侧车**故意**不带 pywebview，
+        # 那个窗口属于外壳。装多了会让「包不比源检出少会做一件事」的
+        # 对等检查失去意义。
+        run: |
+          python -m pip install --upgrade pip
+          pip install -e ".[sidecar]"
+
+      - name: Toolchain
+        # build.py 要从 rustc -vV 读主机三元组（它就是输出文件名的后缀）
+        run: rustc --version
+
+      - name: Build the bundle and check it
+        # 这一步就是全部：PyInstaller 把包打出来，紧接着 verify() 去找
+        # 包里少了什么。PyInstaller **不能交叉编译**，所以每个平台各跑一次——
+        # 也就只有在这里，「跨平台」才从声明变成事实。
+        run: python desktop/sidecar/build.py
 
   shell-off-windows:
     name: shell compiles off Windows (${{ matrix.os }})

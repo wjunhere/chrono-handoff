@@ -201,8 +201,27 @@ cd src-tauri && cargo build && ./target/debug/chrono-handoff.exe
 
 产出 `desktop/src-tauri/binaries/chrono-core-<target-triple>[.exe]`（Tauri 的
 `externalBin` 约定，已写进 `tauri.conf.json`），并把它复制到 `target/debug/`
-旁以便 `cargo build` 直接验证。脚本最后会跑一次 `chrono-core doctor` 自检——
-一个静默丢了 PortAudio 的冻结包，在需要声音之前看起来和正常的一模一样。
+旁以便 `cargo build` 直接验证。
+
+构建完会跑一次**会失败**的自检（`verify()`），四件事：
+
+| 检查 | 否证的是 |
+|---|---|
+| 能力对等 | 包的 `doctor` 行 vs **源解释器**的同一批行：包不能比它来源的那份检出少会做一件事。两侧都在同一台机器上测，所以不写死任何平台预期 |
+| PE subsystem | Windows 上包仍是控制台程序（`--console`）。`doctor` 的 `console` 行在 pty 下永远是 NO，分不出 `--noconsole`，所以直接读 PE 头 |
+| 冻结内 selftest | 10 个机制在**冻结进程里**跑一遍 |
+| 真的serve | 把包当 daemon 起起来，抓 `/`、`/icon.svg`、字体，与**仓库里的原件逐字节比** |
+
+逐字节比是有意的：既能抓「文件没了」，也能抓「文件是旧的」——包里留着上一版的
+panel.html，除了人眼比对窗口和源码，没有别的东西会发现。自检会顺手把起的 daemon
+关干净（`--onefile` 的 bootloader 会再执行自己，`taskkill /T` 追不上那个子进程，所以
+按**谁占着 IPC 端口**来杀），关不掉会被记成一条问题。
+
+`--no-build` 只重跑自检，不重新打包（打包要几分钟）。
+
+selftest 里多数机制是**测时序**的，机器忙时会偶发失败（本机观察到一次
+`9/10`，重跑三次都是 `10/10`）。失败时会打出是哪一项 `[FAIL]`，因为「真的丢了能力」
+和「刚才机器在忙」需要完全不同的反应。
 
 **PyInstaller 不能交叉编译**，必须在每个目标平台上各跑一次（CI 亦然）。
 
