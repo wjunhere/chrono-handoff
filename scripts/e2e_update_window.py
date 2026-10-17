@@ -168,6 +168,23 @@ def urllib_probe(port: int) -> str:
         return f"{type(exc).__name__}: {exc}"
 
 
+def cold_start_cost(env: dict[str, str]) -> str:
+    """How long a fresh interpreter takes here, and how long the daemon's imports do.
+
+    A 34-second start is either the interpreter/import chain or the daemon's own
+    first lines, and from outside those two look identical.  The daemon's own
+    `--verbose` marks cover the second half; this covers the half that happens
+    before its first line can possibly report anything.
+    """
+    parts: list[str] = []
+    for label, code in (("interpreter", "pass"), ("imports", "import chrono_handoff.cli")):
+        started = time.monotonic()
+        subprocess.run([sys.executable, "-u", "-c", code], cwd=str(ROOT), env=env,
+                       capture_output=True)
+        parts.append(f"{label} {(time.monotonic() - started) * 1000:.0f}ms")
+    return " | ".join(parts)
+
+
 def dump_stacks(proc: "subprocess.Popen[Any]", label: str) -> None:
     """Make a stuck child dump every thread's stack, then wait briefly for it.
 
@@ -273,9 +290,17 @@ def main() -> int:
             print(f"  ConductorClient(ipc).healthy() -> {client.healthy()}")
             print(f"  raw GET panel/api/health -> {raw_http(panel, '/api/health')}")
             print(f"  urllib GET panel/api/health -> {urllib_probe(panel)}")
+            print(f"  cold start in this environment: {cold_start_cost(env)}")
+            started = time.monotonic()
+            fqdn = socket.getfqdn("127.0.0.1")
+            print(f"  socket.getfqdn('127.0.0.1') -> {fqdn!r} in "
+                  f"{(time.monotonic() - started) * 1000:.0f}ms (in this process, so warm)")
             dump_stacks(proc, label="daemon")
             text = log_path.read_text(encoding="utf-8", errors="replace")
-            print(f"  its log ({len(text)} chars):\n{text[-4000:] or '(empty)'}")
+            # Printed whole, from the start: the previous round kept the last 4000 of
+            # a 4346-char log and threw away exactly the start-up marks this run was
+            # added to produce.
+            print(f"  its log ({len(text)} chars):\n{text[:8000] or '(empty)'}")
             return 1
         client = ConductorClient(port=ipc, timeout_s=5.0)
 
