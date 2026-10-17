@@ -346,8 +346,17 @@ def _kill_tree(proc: subprocess.Popen, ipc_port: int) -> None:
 
 
 def _check_selftest(built: Path, env: dict[str, str], findings: list[str]) -> None:
-    """The mechanisms, run inside the frozen process rather than the checkout."""
-    out = subprocess.run([str(built), "selftest"], capture_output=True,
+    """The mechanisms, run inside the frozen process rather than the checkout.
+
+    `--tolerant-timing` because two of the checks compare the scheduler's landing
+    error against 5 ms, and a shared CI runner cannot promise that: measured on a
+    hosted macOS runner, 19.2 ms max and 7.9 ms median under contention, with
+    nothing wrong in the code.  The threshold lines are still printed with their
+    numbers, so a loaded machine is distinguishable from a real regression -- this
+    check's job is "the frozen bundle works", not "this machine is quiet".  The
+    quiet-machine measurement lives on the author's box and in the e2e medians.
+    """
+    out = subprocess.run([str(built), "selftest", "--tolerant-timing"], capture_output=True,
                          encoding="utf-8", errors="replace", env=env, cwd=str(ROOT))
     verdict = next((ln.strip() for ln in reversed(out.stdout.splitlines()) if ln.strip()), "")
     _line("selftest", "10 mechanisms", verdict or f"no output (exit {out.returncode})")

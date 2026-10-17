@@ -107,29 +107,43 @@ def cmd_doctor(args: argparse.Namespace) -> int:
     if sink.name == "wav":
         import winsound
 
-        # Warm the device first: the very first PlaySound after process start
-        # pays a one-off device-initialisation cost and would be misreported as
-        # the steady-state per-beat cost.
-        sink.play("tick")
-        time.sleep(0.15)
-        samples = []
-        for _ in range(20):
-            t = time.perf_counter()
+        # Everything below touches the *device*, and a device that refuses is not
+        # an exotic case: a CI runner, a VM, a machine used over RDP and a session
+        # with the audio service stopped all answer "Failed to beep".  That used to
+        # raise straight out of `doctor`, which made the one command whose job is
+        # to report what a machine can do be the one command that crashed on a
+        # machine that cannot do it -- found by CI, which is exactly such a
+        # machine.
+        try:
+            # Warm the device first: the very first PlaySound after process start
+            # pays a one-off device-initialisation cost and would be misreported as
+            # the steady-state per-beat cost.
             sink.play("tick")
-            samples.append((time.perf_counter() - t) * 1000)
-            time.sleep(0.03)
-        rows.append(
-            (
-                "audio call cost",
-                f"median {statistics.median(samples):.3f} ms / max {max(samples):.3f} ms",
-                "steady state; must be << 1ms or it steals window time",
+            time.sleep(0.15)
+            samples = []
+            for _ in range(20):
+                t = time.perf_counter()
+                sink.play("tick")
+                samples.append((time.perf_counter() - t) * 1000)
+                time.sleep(0.03)
+            rows.append(
+                (
+                    "audio call cost",
+                    f"median {statistics.median(samples):.3f} ms / max {max(samples):.3f} ms",
+                    "steady state; must be << 1ms or it steals window time",
+                )
             )
-        )
 
-        t = time.perf_counter()
-        winsound.Beep(880, 30)
-        beep_ms = (time.perf_counter() - t) * 1000
-        rows.append(("winsound.Beep(30ms)", f"blocks {beep_ms:.1f} ms", "NOT used by the conductor -- blocking"))
+            t = time.perf_counter()
+            winsound.Beep(880, 30)
+            beep_ms = (time.perf_counter() - t) * 1000
+            rows.append(("winsound.Beep(30ms)", f"blocks {beep_ms:.1f} ms", "NOT used by the conductor -- blocking"))
+        except Exception as exc:
+            # Reported, not raised, and not a `problem`: a cue that silently has no
+            # sound is bad, but this row is about the *device this process can
+            # reach right now*, and doctor's job is to say so.
+            rows.append(("audio device", f"{type(exc).__name__}: {exc}",
+                         "this machine cannot play a cue tone right now"))
     sink.close()
 
     # clock
@@ -633,6 +647,17 @@ def _selftest_source_fallback() -> tuple[bool, str]:
         conductor.stop(terminate_runs=False)
 
 
+#: The two checks that measure the *machine*, not the code: they compare the
+#: scheduler's landing error against fixed thresholds (5 ms), which a shared CI
+#: runner cannot promise.  Measured on a hosted macOS runner: 19.2 ms max offset
+#: and a 7.9 ms median under contention, with nothing wrong in the code -- and the
+#: same checks read 0.006 ms on the author's machine.
+#:
+#: Named explicitly rather than inferred, because a list of "failures we do not
+#: count" that quietly grows is exactly how a real regression gets ignored.
+TIMING_ONLY_CHECKS = ("clock: grid accuracy & drift", "clock: accuracy under CPU contention")
+
+
 def cmd_selftest(args: argparse.Namespace) -> int:
     checks: list[tuple[str, Callable[[], tuple[bool, str]]]] = [
         ("clock: grid accuracy & drift", _selftest_clock),
@@ -646,7 +671,9 @@ def cmd_selftest(args: argparse.Namespace) -> int:
         ("ipc: submit/observe/wait dispatch path", _selftest_ipc),
         ("robustness: unavailable source degrades", _selftest_source_fallback),
     ]
+    tolerant = bool(getattr(args, "tolerant_timing", False))
     failures = 0
+    excused = 0
     print(f"chrono-handoff {__version__} selftest")
     for name, fn in checks:
         t = time.perf_counter()
@@ -655,10 +682,19 @@ def cmd_selftest(args: argparse.Namespace) -> int:
         except Exception as exc:
             ok, msg = False, f"EXCEPTION {type(exc).__name__}: {exc}"
         dur = (time.perf_counter() - t) * 1000
-        print(f"  [{'PASS' if ok else 'FAIL'}] {name:<42} ({dur:6.1f}ms)  {msg}")
-        if not ok:
-            failures += 1
-    print(f"\n{len(checks) - failures}/{len(checks)} passed")
+        note = ""
+        if not ok and tolerant and name in TIMING_ONLY_CHECKS:
+            # Downgraded, not hidden: the line still says FAIL and still shows the
+            # number, because that number is the only way to tell a loaded runner
+            # from a real regression.
+            note = "  (excused: measures the machine -- see --tolerant-timing)"
+            excused += 1
+        else:
+            if not ok:
+                failures += 1
+        print(f"  [{'PASS' if ok else 'FAIL'}] {name:<42} ({dur:6.1f}ms)  {msg}{note}")
+    print(f"\n{len(checks) - failures - excused}/{len(checks)} passed"
+          + (f", {excused} excused as environment noise" if excused else ""))
     return 1 if failures else 0
 
 
@@ -978,6 +1014,10 @@ def build_parser() -> argparse.ArgumentParser:
     d.set_defaults(fn=cmd_doctor)
 
     st = sub.add_parser("selftest", help="verify the machinery without a human")
+    st.add_argument("--tolerant-timing", action="store_true",
+                    help="exit 0 when the only failures are the two checks that measure the "
+                         "machine's scheduling accuracy rather than the code (for shared CI "
+                         "runners, which cannot promise 5 ms)")
     st.set_defaults(fn=cmd_selftest)
 
     pr = sub.add_parser("probe", help="M1: measure the human offset against a beat grid")

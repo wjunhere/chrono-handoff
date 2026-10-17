@@ -239,7 +239,12 @@ def main() -> int:
     ct = str(OUT.get("clock_text") or "")
     check("countdown shows a number (not '+' of nothing)", ct.isdigit() and len(ct) == 2,
           f"clock={ct!r} phase={OUT.get('phase_text')!r}")
-    check("countdown is positive", int(ct or 0) > 0, f"{ct} beats to GO")
+    # Only parse what the check above established is a number.  A cue that had not
+    # started yet leaves the page's pre-cue label here ("准备"), and `int("准备")`
+    # used to take the whole suite down with a traceback -- hiding every assertion
+    # after it -- instead of failing one line and carrying on.
+    beats = int(ct) if ct.isdigit() else 0
+    check("countdown is positive", beats > 0, f"{ct or '(no text)'} -> {beats} beats to GO")
 
     wide = OUT.get("wide") or {}
     tall = OUT.get("tall_narrow") or {}
