@@ -319,9 +319,20 @@ class Scheduler:
         try:
             job.fn(job.deadline)
         except Exception as exc:  # a broken callback must not kill the clock
-            self.firings.append(Firing(job.name, at, offset, -1.0, job.skipped))
+            # A marker for the failed execution, not a beat: it carries no drop count,
+            # which belongs to the firing below -- the one that is being scheduled.
+            self.firings.append(Firing(job.name, at, offset, -1.0, 0))
             _report_broken_callback(self.name, job.name, exc)
         executed = CLOCK() - at
+        # Advance the grid *before* recording this firing.  `_reschedule` is what
+        # decides how many beats this firing dropped, so recording first attributed
+        # the *previous* firing's drops to this one -- and when the grid ended here
+        # (its remaining count ran out) the last drop was never recorded at all.
+        # Measured on a loaded macOS runner as `fired=3 dropped=0 accounted=False`
+        # for a run that had dropped 7 of its 10 beats, and reproduced locally with a
+        # 240ms stall.
+        if job.every is not None and not job.cancelled:
+            self._reschedule(job, at)
         firing = Firing(job.name, at, offset, executed, job.skipped)
         self.firings.append(firing)
         if self._on_firing is not None:
@@ -330,8 +341,6 @@ class Scheduler:
             except Exception:
                 pass
         job.skipped = 0
-        if job.every is not None and not job.cancelled:
-            self._reschedule(job, at)
 
     def _reschedule(self, job: _Job, fired_at: float) -> None:
         """Advance a recurring job on its absolute grid.
@@ -351,7 +360,13 @@ class Scheduler:
         behind = 0
         if nxt <= fired_at:
             behind = int((fired_at - nxt) // every) + 1
-            nxt += behind * every
+        if job.remaining is not None:
+            # `behind` comes from the lateness alone, so a stall longer than the whole
+            # grid would count beats that were never going to fire (measured:
+            # `dropped=12` for a grid that had 8 beats left).  A beat that did not
+            # exist was not dropped, and the count has to stay true.
+            behind = min(behind, max(0, job.remaining - 1))
+        nxt += behind * every
         job.skipped = behind
         if job.remaining is not None:
             job.remaining -= 1 + behind

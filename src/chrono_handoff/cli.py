@@ -426,27 +426,42 @@ def _grid_burst_report(firings: list[Firing], hits: list[float], every: float,
 
 def _selftest_grid_skip() -> tuple[bool, str]:
     """When the process stalls, missed beats are dropped and counted, not
-    replayed in a burst."""
+    replayed in a burst.
+
+    Two stalls, because they fail differently: 120ms lets the grid carry on after
+    the drop, while 400ms drops everything that was left and ends the grid on the
+    firing that dropped them -- which is where the count used to be lost entirely
+    (`fired=3 dropped=0 accounted=False` on a loaded macOS runner).
+    """
     import threading as _th
 
-    every = 0.03
-    s = Scheduler("skip").start()
-    hits: list[float] = []
-    blocked = _th.Event()
-    t0 = CLOCK() + 0.05
-    n = 10
+    every, n = 0.03, 10
+    reports: list[str] = []
+    ok_all = True
+    for stall in (0.12, 0.40):
+        s = Scheduler(f"skip{stall}").start()
+        hits: list[float] = []
+        blocked = _th.Event()
 
-    def cb(d: float) -> None:
-        hits.append(CLOCK())
-        if len(hits) == 2:
-            blocked.set()
-            time.sleep(0.12)          # stall for ~4 intervals of 30ms
+        def cb(_d: float, hits: list[float] = hits, blocked: _th.Event = blocked,
+               stall: float = stall) -> None:
+            hits.append(CLOCK())
+            if len(hits) == 2:
+                blocked.set()
+                time.sleep(stall)
 
-    s.grid(t0, every, cb, count=n, name="sk")
-    blocked.wait(2.0)
-    time.sleep(0.3)
-    s.stop()
-    return _grid_burst_report([f for f in s.firings if f.name == "sk"], hits, every, n)
+        s.grid(CLOCK() + 0.05, every, cb, count=n, name="sk")
+        blocked.wait(2.0)
+        # Longer than the stall: the grid resumes when the callback returns, and
+        # stopping the scheduler first means the beat after the stall never fires at
+        # all (`fired=2 dropped=0` with a 400ms stall and a 400ms wait).
+        time.sleep(stall + 0.3)
+        s.stop()
+        ok, detail = _grid_burst_report([f for f in s.firings if f.name == "sk"],
+                                        hits, every, n)
+        ok_all = ok_all and ok
+        reports.append(f"stall={stall * 1000:.0f}ms {detail}")
+    return ok_all, " | ".join(reports)
 
 
 def _selftest_late_addition() -> tuple[bool, str]:

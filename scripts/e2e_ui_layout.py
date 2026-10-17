@@ -20,6 +20,7 @@ import json
 import os
 import sys
 import time
+from typing import Any
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
@@ -120,6 +121,25 @@ def main() -> int:
     win = CueWindow(conductor=conductor, panel_port=0, settings_path=settings_path,
                     width=460, height=620, on_top=True)
 
+    def wait_for_width(js: Any, want: int, timeout: float = 10.0) -> int:
+        """Wait for the page to be as wide as the window was asked to be.
+
+        The window manager applies a resize asynchronously, and under load the
+        measurements below ran while it was still in flight -- which reported
+        `vw=446` for a window that had just been asked for 880, i.e. a layout that
+        never got the chance to respond.  Returns the width actually reached.
+        """
+        deadline = time.time() + timeout
+        width = 0
+        while time.time() < deadline:
+            width = int(js("innerWidth") or 0)
+            if width == want:
+                return width
+            time.sleep(0.2)
+        print(f"  [WARN] window asked for {want}px, page reports {width}px after "
+              f"{timeout:.0f}s")
+        return width
+
     def ready(w) -> None:
         js = w.window.evaluate_js
         time.sleep(2.2)
@@ -165,12 +185,16 @@ def main() -> int:
             # `arm()` goes *after* the resize, not before: arming a fresh cue makes the
             # window fit its content again, so arming first undid the resize and the
             # check read `vw=446` for a window that had just been asked for 880.
+            #
+            # And the resize is *waited for*, not assumed to be instant: the window
+            # manager applies it asynchronously, and under load the check read
+            # `vw=446` for a resize that was still in flight.
             w.window.resize(880, 520)
-            time.sleep(1.0)
+            wait_for_width(js, 880)
             arm()
             OUT["wide"] = js(GEO_JS)
             w.window.resize(340, 780)
-            time.sleep(1.0)
+            wait_for_width(js, 340)
             # still mid-countdown at this size, so the clock font is measurable --
             # same reason as above for arming after the resize, not before
             arm()
