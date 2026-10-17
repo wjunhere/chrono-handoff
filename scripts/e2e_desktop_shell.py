@@ -349,15 +349,26 @@ def run_shell_until(seconds: float, tag: str, panel_port: int, ipc_port: int) ->
 def close_shell(proc: subprocess.Popen, tag: str) -> str:
     """Close the shell the way a user does, and return what it logged then.
 
-    Graceful (no /F) so `CloseRequested` runs -- that handler is the one that
-    writes geometry, and killing the process would test nothing.
+    `WM_CLOSE` is posted straight to the window rather than going through
+    `taskkill /PID`: it is the same message, but taskkill needs the calling session
+    to be able to reach that window, and on a CI runner it does not.  There the
+    graceful close silently never happened, the suite force-killed the process 20s
+    later, and the geometry check read `(none)` for a save that never had a chance
+    to run -- while the very same `CloseRequested` handler passed in the phase that
+    closes through the page's own close button.  Either way the handler under test
+    is `CloseRequested`; this way it actually runs.
 
     Targets this Popen's own pid rather than searching by image name: the suite
     can have more than one shell alive, and "kill whatever is called
     chrono-handoff.exe" would then close someone else's window.
     """
-    subprocess.run(["taskkill", "/PID", str(proc.pid)],
-                   stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    window = find_shell_window(proc.pid)
+    if window is not None:
+        u.PostMessageW(window["hwnd"], 0x0010, 0, 0)  # WM_CLOSE
+    else:
+        print(f"  [WARN] no window found for pid {proc.pid}; closing with taskkill instead")
+        subprocess.run(["taskkill", "/PID", str(proc.pid)],
+                       stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
     try:
         proc.wait(timeout=20)
     except subprocess.TimeoutExpired:
