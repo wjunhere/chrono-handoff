@@ -50,6 +50,7 @@ os.environ.setdefault("CHRONO_HOME", str(ROOT / "logs" / "_home"))
 import _wininput  # noqa: E402
 
 from chrono_handoff.conductor import Conductor  # noqa: E402
+from chrono_handoff.mcp_server import ConductorClient  # noqa: E402
 from chrono_handoff.webui import CuePanel  # noqa: E402
 
 SHELL_EXE = ROOT / "desktop" / "src-tauri" / "target" / "debug" / "chrono-handoff.exe"
@@ -611,13 +612,28 @@ def stop_conductor_from_pidfile() -> None:
 
     Never `taskkill /IM python.exe`: that is every Python process on the
     machine, including services that have nothing to do with this project.
+
+    A pid from a file is not an identity, either: Windows reuses pids, and this
+    suite starts and stops conductors all day, so a stale `daemon.json` can name a
+    process that has nothing to do with this project -- killed by pid alone it takes
+    that process down.  (Three outages of an unrelated local service during this
+    project's long test sessions are consistent with exactly that.)  So the pidfile's
+    port is asked first: if whatever is on it does not answer as a chrono conductor,
+    the pid is left alone and the phase reports the port as busy, which is honest and
+    recoverable.
     """
     import json
 
     pidfile = Path(os.environ["CHRONO_HOME"]) / "daemon.json"
     try:
-        pid = json.loads(pidfile.read_text(encoding="utf-8"))["pid"]
+        data = json.loads(pidfile.read_text(encoding="utf-8"))
+        pid = int(data["pid"])
+        port = int(data["port"])
     except Exception:
+        return
+    if not ConductorClient(port=port, timeout_s=1.0).healthy():
+        print(f"  [INFO] not killing pid {pid}: nothing answers as a conductor on "
+              f"{port} (a recycled pid would be somebody else's process)")
         return
     # Output discarded on purpose: taskkill writes its banner in the OEM code
     # page (cp936 here), so capturing it as text is a decode error waiting to
