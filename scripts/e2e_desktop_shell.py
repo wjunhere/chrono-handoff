@@ -329,7 +329,14 @@ def geometry_settings(**over: object) -> Path:
 
 
 def run_shell_until(seconds: float, tag: str, panel_port: int, ipc_port: int) -> tuple[str, subprocess.Popen]:
-    """Start the shell, let it settle, and return (log text, process)."""
+    """Start the shell and wait for it to open a window, up to `seconds`.
+
+    Waits for the window rather than for the clock: the shell has to start, spawn a
+    conductor, get the contract handshake and only then create a window, and on a
+    loaded CI runner that outlasted a fixed 26s budget -- the log then had no
+    "opening at" line at all and the geometry check reported `(none)`, which reads as
+    a product fault.  If it still never appears, that is said out loud.
+    """
     log_path = ROOT / "logs" / "_shell" / f"{tag}.log"
     log_path.parent.mkdir(parents=True, exist_ok=True)
     log = log_path.open("w", encoding="utf-8")
@@ -341,10 +348,25 @@ def run_shell_until(seconds: float, tag: str, panel_port: int, ipc_port: int) ->
         stdout=log, stderr=subprocess.STDOUT,
     )
     deadline = time.time() + seconds
+    opened = False
     while time.time() < deadline and proc.poll() is None:
+        # Only recorded, not used to cut the wait short: the phases below rely on the
+        # shell having had the whole budget to settle, and stopping at the first
+        # window line made them race instead (two unrelated geometry checks started
+        # failing the moment this loop broke early).
+        log.flush()
+        if not opened:
+            opened = "[shell] opening at" in log_path.read_text(encoding="utf-8", errors="replace")
         time.sleep(0.5)
     log.flush()
-    return log_path.read_text(encoding="utf-8", errors="replace"), proc
+    text = log_path.read_text(encoding="utf-8", errors="replace")
+    if "[shell] opening at" in text:
+        opened = True
+    if not opened:
+        print(f"  [WARN] the shell ({tag}, pid {proc.pid}) opened no window in {seconds:.0f}s; "
+              f"exited={proc.poll() is not None}; log so far: "
+              f"{[line for line in text.splitlines() if line.startswith('[shell]')][:3]}")
+    return text, proc
 
 
 def close_shell(proc: subprocess.Popen, tag: str) -> str:
@@ -414,7 +436,7 @@ def phase_geometry() -> None:
         stop_conductor_from_pidfile()
         geometry_settings(**settings)
         panel_port, ipc_port = fresh_ports(n)
-        text, proc = run_shell_until(26, tag, panel_port, ipc_port)
+        text, proc = run_shell_until(60, tag, panel_port, ipc_port)
         try:
             return text, close_shell(proc, tag)
         finally:
@@ -446,7 +468,7 @@ def phase_geometry() -> None:
         (Path(os.environ["CHRONO_HOME"]) / "settings.json").read_text(encoding="utf-8")
     )
     panel_port, ipc_port = fresh_ports(3)
-    _, proc = run_shell_until(26, "geom3", panel_port, ipc_port)
+    _, proc = run_shell_until(60, "geom3", panel_port, ipc_port)
     try:
         saved = close_shell(proc, "geom3")
         after = json.loads(
