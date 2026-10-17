@@ -134,9 +134,23 @@ def main() -> int:
             # operator reads most and it must show a positive count.  A fixed
             # sleep landed in the "准备" pre-roll and reported a failure that
             # was purely the test's timing.
-            deadline = time.time() + 8.0
+            #
+            # The budget has to cover the pre-roll, which is 6s of the 9s
+            # `target_in_s`, plus the page's own poll: an 8s budget left barely two
+            # seconds of slack, and on a CI runner that was not enough -- every
+            # dependent check then failed as if the clock were mis-styled, because
+            # the page was still showing "--".  The cue runs for 20s, so waiting
+            # longer cannot land past the end of it.
+            deadline = time.time() + 20.0
             while time.time() < deadline:
-                if js("document.getElementById('clock').textContent").strip().isdigit():
+                # Both conditions, because either alone is satisfied by a page that
+                # has nothing to show yet: a fresh page renders `--` with an empty
+                # grid, and the grid is built from the schedule the page polls for.
+                # Measured on the runner as `clock='--' phase='' cells=0` -- the
+                # state before the page knew about the cue at all.
+                clock_now = js("document.getElementById('clock').textContent")
+                cells_now = js("document.querySelectorAll('#grid .cell').length") or 0
+                if str(clock_now).strip().isdigit() and cells_now > 0:
                     break
                 time.sleep(0.2)
             # deliberately measured mid-countdown
@@ -231,6 +245,12 @@ def main() -> int:
 
     c = OUT.get("with_cue") or {}
     ck = c.get("clock") or {}
+    # First, whether there was a countdown to measure at all.  Without this the
+    # wait above timing out surfaces as "the clock font is 39.96px", which reads
+    # as a styling bug and sends you into the CSS.
+    check("a countdown was actually running when measured",
+          str(OUT.get("clock_text") or "").isdigit(),
+          f"clock={OUT.get('clock_text')!r} phase={OUT.get('phase_text')!r}")
     check("clock renders with a big font", c.get("clockFont", 0) >= 40, f"{c.get('clockFont')}px")
     check("clock fits inside the window", ck.get("h", 999) < c.get("vh", 0) and ck.get("w", 999) <= c.get("vw", 0),
           f"clock={ck.get('w')}x{ck.get('h')} viewport={c.get('vw')}x{c.get('vh')}")
