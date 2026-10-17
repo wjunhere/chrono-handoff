@@ -275,9 +275,17 @@ def main() -> int:
 
     wide = OUT.get("wide") or {}
     tall = OUT.get("tall_narrow") or {}
+    # Not a ratio against the default size: the wide case is 880x**520**, i.e. wider
+    # but 100px *shorter* than the default 620, and the clock is sized from the
+    # available height -- so a smaller clock there is the layout working, not failing.
+    # The runner measured exactly that (`vw=880 clockH=64.2`) and was reported as a
+    # layout bug.  What has to hold is that the clock is still readable and nothing
+    # overflowed.
     check("layout responds to a wide window",
-          (wide.get("clock") or {}).get("h", 0) >= (c.get("clock") or {}).get("h", 0) * 0.9
-          and wide.get("vw") == 880, f"vw={wide.get('vw')} clockH={(wide.get('clock') or {}).get('h')}")
+          wide.get("vw") == 880 and wide.get("clockFont", 0) >= 40
+          and wide.get("docW", 0) <= wide.get("vw", 0) + 1,
+          f"vw={wide.get('vw')} clockFont={wide.get('clockFont')} "
+          f"clockH={(wide.get('clock') or {}).get('h')} docW={wide.get('docW')}")
     check("no overflow when narrow", tall.get("docW", 0) <= tall.get("vw", 0) + 1,
           f"scrollWidth={tall.get('docW')} vs {tall.get('vw')}")
     tc = str(OUT.get("tall_clock_text") or "")
