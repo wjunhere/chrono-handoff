@@ -126,33 +126,33 @@ def main() -> int:
         try:
             OUT["at_default"] = js(GEO_JS)
 
-            # arm a cue so the timer state is rendered, then measure again
-            w.conductor.cue(instruction="按一下开发板上的 RESET 键", target_in_s=9.0,
-                            lead_s=6.0, ioi_ms=500, tail_beats=6,
-                            expect_source="none", duration_s=20, open_panel=False)
-            # Wait until the countdown itself is running: the timer is what the
-            # operator reads most and it must show a positive count.  A fixed
-            # sleep landed in the "准备" pre-roll and reported a failure that
-            # was purely the test's timing.
+            # arm a cue so the timer state is rendered, then measure again.
             #
-            # The budget has to cover the pre-roll, which is 6s of the 9s
-            # `target_in_s`, plus the page's own poll: an 8s budget left barely two
-            # seconds of slack, and on a CI runner that was not enough -- every
-            # dependent check then failed as if the clock were mis-styled, because
-            # the page was still showing "--".  The cue runs for 20s, so waiting
-            # longer cannot land past the end of it.
-            deadline = time.time() + 20.0
-            while time.time() < deadline:
-                # Both conditions, because either alone is satisfied by a page that
-                # has nothing to show yet: a fresh page renders `--` with an empty
-                # grid, and the grid is built from the schedule the page polls for.
-                # Measured on the runner as `clock='--' phase='' cells=0` -- the
-                # state before the page knew about the cue at all.
-                clock_now = js("document.getElementById('clock').textContent")
-                cells_now = js("document.querySelectorAll('#grid .cell').length") or 0
-                if str(clock_now).strip().isdigit() and cells_now > 0:
-                    break
-                time.sleep(0.2)
+            # Re-armed before each measurement rather than once for all three: the
+            # countdown a single cue gives lasts about 5.5s, the three measurements
+            # below are spread over more than that on a slow machine, and on the
+            # runner the tall one landed at `clock='+2.7'` -- past GO, where the
+            # clock is deliberately small -- and reported "clock stays large when
+            # tall 30.6px" as if the layout were wrong.  Measured over 26s: digits
+            # appear ~3s after arming and hold until GO.
+            def arm() -> None:
+                """Arm the cue and wait until its countdown is actually showing."""
+                w.conductor.cue(instruction="按一下开发板上的 RESET 键", target_in_s=9.0,
+                                lead_s=6.0, ioi_ms=500, tail_beats=6,
+                                expect_source="none", duration_s=20, open_panel=False)
+                # Both conditions, because either alone is satisfied by a page with
+                # nothing to show yet: a fresh page renders `--` with an empty grid,
+                # and the grid comes from the schedule the page polls for.  Measured
+                # on the runner as `clock='--' phase='' cells=0`.
+                deadline = time.time() + 20.0
+                while time.time() < deadline:
+                    clock_now = js("document.getElementById('clock').textContent")
+                    cells_now = js("document.querySelectorAll('#grid .cell').length") or 0
+                    if str(clock_now).strip().isdigit() and cells_now > 0:
+                        return
+                    time.sleep(0.2)
+
+            arm()
             # deliberately measured mid-countdown
             OUT["with_cue"] = js(GEO_JS)
             OUT["clock_text"] = js("document.getElementById('clock').textContent")
@@ -161,12 +161,19 @@ def main() -> int:
             OUT["cells"] = js("document.querySelectorAll('#grid .cell').length")
 
             # resize the window: the layout must respond, not need a zoom slider
+            #
+            # `arm()` goes *after* the resize, not before: arming a fresh cue makes the
+            # window fit its content again, so arming first undid the resize and the
+            # check read `vw=446` for a window that had just been asked for 880.
             w.window.resize(880, 520)
             time.sleep(1.0)
+            arm()
             OUT["wide"] = js(GEO_JS)
             w.window.resize(340, 780)
             time.sleep(1.0)
-            # still mid-countdown at this size, so the clock font is measurable
+            # still mid-countdown at this size, so the clock font is measurable --
+            # same reason as above for arming after the resize, not before
+            arm()
             OUT["tall_narrow"] = js(GEO_JS)
             OUT["tall_clock_text"] = js("document.getElementById('clock').textContent")
 
