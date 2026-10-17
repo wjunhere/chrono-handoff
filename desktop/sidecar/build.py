@@ -317,20 +317,30 @@ def _kill_tree(proc: subprocess.Popen, ipc_port: int) -> None:
     socket is the process that actually has to go, so that is the primary
     target; the tree kill is just belt and braces.
     """
-    killed_root = False
     deadline = time.monotonic() + 15
+    started = time.monotonic()
     while True:
-        if not killed_root:
-            killed_root = True
-            if sys.platform == "win32":
-                subprocess.run(["taskkill", "/F", "/T", "/PID", str(proc.pid)],
-                               capture_output=True, check=False)
-            elif proc.poll() is None:
-                # POSIX: a forked child stays in the process group, so one
-                # signal to the group reaches all of it.
-                os.killpg(os.getpgid(proc.pid), signal.SIGTERM)
-        # A child that appeared after the kill above is caught on the next pass:
-        # whoever listens on the port is the conductor, however late it showed up.
+        # Signalled on **every** pass, not once.  The child that holds the sockets can
+        # appear after the first signal -- that is the whole reason this loop exists --
+        # and on POSIX nothing else in here can find it, because `_listening_pids`
+        # reads Windows' `netstat`.  Measured on ubuntu: the onefile bootloader's
+        # child outlived its parent, the single group kill was skipped (`proc.poll()`
+        # was no longer None), and the loop could only watch the port stay open for
+        # 15s and report a leak it had no way to clean up.
+        if sys.platform == "win32":
+            subprocess.run(["taskkill", "/F", "/T", "/PID", str(proc.pid)],
+                           capture_output=True, check=False)
+        else:
+            # `proc.pid` *is* the group id: the bundle is started with
+            # `start_new_session=True`.  Used directly instead of
+            # `os.getpgid(proc.pid)`, which raises once the parent has been reaped --
+            # exactly the case that leaked.  Graceful first, then forceful.
+            graceful = (time.monotonic() - started) < 2.0
+            try:
+                os.killpg(proc.pid, signal.SIGTERM if graceful else signal.SIGKILL)
+            except OSError:
+                pass
+        # Whoever listens on the port is the conductor, however late it showed up.
         if sys.platform == "win32":
             for pid in _listening_pids(ipc_port):
                 subprocess.run(["taskkill", "/F", "/PID", str(pid)],
