@@ -27,6 +27,11 @@ env:
   # Windows runner 的默认编码不是 UTF-8，而 e2e 里到处都是中文与 emoji；
   # 子进程自己再写一次（有些套件是 setdefault，这里先给上）。
   PYTHONIOENCODING: utf-8
+  # 这些套件里有几条断言量的是**这台机器**的调度精度（cue 落点中位数、页面按
+  # 键相对 GO 的偏移、tail 拍）。作者的机器上是 0.006–0.017 ms，共享 runner 上
+  # 实测 8.067 ms 与 188.4 ms，而代码没有任何不同。置 1 后它们仍然打印数字，但
+  # 不断言——因为一个因为 runner 调度而变红的构建，最后只会被人忽略。
+  CHRONO_TOLERANT_TIMING: "1"
 
 jobs:
   core:
