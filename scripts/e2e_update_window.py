@@ -87,6 +87,60 @@ def port_free(port: int) -> bool:
         return s.connect_ex(("127.0.0.1", port)) != 0
 
 
+def port_state(port: int) -> str:
+    """`unbound`, `bound` or `answering`.
+
+    The difference between the first two is the whole diagnosis, and a request
+    cannot see it: a conductor whose bind succeeded but whose accept loop never
+    started has the kernel accept connections into the backlog and never answer
+    them, so it reads as "nothing here".  Measured that way, the macOS hang was
+    reported as "nothing is listening on either port" while what was true is that
+    the IPC port was bound and stuck -- which points at the code between the bind
+    and the accept loop, a completely different search.
+    """
+    try:
+        conn = socket.create_connection(("127.0.0.1", port), timeout=1.0)
+    except OSError:
+        # Refused or unreachable: nothing is bound.  Only *this* failure means that.
+        return "unbound"
+    with conn:
+        try:
+            conn.settimeout(2.0)
+            conn.sendall(b"GET /api/health HTTP/1.0\r\n\r\n")
+            return "answering" if conn.recv(16) else "bound"
+        except OSError:
+            # Connected, then nothing came back.  `socket.timeout` is `TimeoutError`,
+            # which is an `OSError` -- treating it with the connect failure above is
+            # how the first version of this reported a listening socket as unbound.
+            return "bound"
+
+
+def dump_stacks(proc: "subprocess.Popen[Any]", label: str) -> None:
+    """Make a stuck child dump every thread's stack, then wait briefly for it.
+
+    `SIGABRT` is handled by CPython's faulthandler at C level, which is why it
+    works on a process that is not running Python bytecode: a Python-level
+    handler cannot run while the main thread is inside a C call or blocked on a
+    lock, and a pending handler is exactly what "ignored SIGTERM" looks like from
+    outside.  The child leaves the traceback on the stderr it already shares with
+    its log, so the log ends up naming the line it died on.  POSIX only -- there
+    is no such signal to send on Windows.
+    """
+    if sys.platform == "win32":
+        return
+    print(f"  asking the {label} (pid {proc.pid}) where it is:")
+    subprocess.run(["ps", "-o", "stat=,wchan=", "-p", str(proc.pid)],
+                   capture_output=True, text=True)
+    try:
+        os.kill(proc.pid, signal.SIGABRT)
+    except OSError as exc:
+        print(f"    could not signal it: {exc}")
+        return
+    deadline = time.monotonic() + 10
+    while proc.poll() is None and time.monotonic() < deadline:
+        time.sleep(0.2)
+
+
 def in_process_refusal() -> None:
     """The quiescent state itself, without a process to leave.
 
@@ -121,7 +175,11 @@ def main() -> int:
 
     home = tempfile.mkdtemp(prefix="chrono-update-window-")
     ipc, panel = free_port(), free_port()
-    env = {**os.environ, "CHRONO_HOME": home, "PYTHONIOENCODING": "utf-8"}
+    env = {**os.environ, "CHRONO_HOME": home, "PYTHONIOENCODING": "utf-8",
+           # So a hang can be asked where it is: the dump below comes from a C-level
+           # signal handler, which runs even when the process is stuck somewhere that
+           # Python-level handlers never get to.
+           "PYTHONFAULTHANDLER": "1"}
     log_path = Path(home) / "daemon.log"
     url = f"http://127.0.0.1:{panel}"
     print(f"\n-- a real daemon: ipc={ipc} panel={panel} --")
@@ -132,21 +190,24 @@ def main() -> int:
         # in type -- anything narrower than Any rejects the call outright.
         detach: dict[str, Any] = {} if sys.platform == "win32" else {"start_new_session": True}
         proc = subprocess.Popen(
-            [sys.executable, "-m", "chrono_handoff.cli", "daemon",
+            # `-u`: a killed process loses whatever is still sitting in its stdout
+            # buffer, and "the log is empty" then reads as "it never printed" --
+            # which is what this suite reported for the macOS hang until the banner
+            # was traced to stderr+flush inside the product.
+            [sys.executable, "-u", "-m", "chrono_handoff.cli", "daemon",
              "--port", str(ipc), "--panel-port", str(panel), "--audio", "null"],
             cwd=str(ROOT), env=env, stdout=log, stderr=subprocess.STDOUT, **detach,
         )
     try:
         if not wait_panel(panel, time.monotonic() + 30):
-            tail = log_path.read_text(encoding="utf-8", errors="replace").strip()[-400:]
-            print(f"  daemon never answered on {panel}; its log says:\n{tail or '(empty)'}")
-            # The next three facts are what turns "it hung" into a diagnosis: an
-            # empty log with a live pid means it died before its first line, an
-            # empty log with a dead pid means it died silently, and an IPC port that
-            # answers means the panel is the part that failed.
-            print(f"  pid alive: {proc.poll() is None} | ipc {ipc} answers: "
-                  f"{ConductorClient(port=ipc, timeout_s=2.0).healthy()} | "
-                  f"panel {panel} answering: {port_free(panel) is False}")
+            print(f"  daemon never answered on {panel}")
+            print(f"  pid alive: {proc.poll() is None} | ipc {ipc}: {port_state(ipc)} | "
+                  f"panel {panel}: {port_state(panel)}")
+            # Ask it where it is before killing it.  `port_state` separates "nothing
+            # bound" from "bound, and never accepting" -- from a request both look
+            # like silence, and that difference is most of the diagnosis.
+            dump_stacks(proc, label="daemon")
+            print(f"  its log says:\n{log_path.read_text(encoding='utf-8', errors='replace').strip()[-600:] or '(empty)'}")
             return 1
         client = ConductorClient(port=ipc, timeout_s=5.0)
 
