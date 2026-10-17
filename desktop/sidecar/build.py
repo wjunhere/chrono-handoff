@@ -31,6 +31,7 @@ reports the same version.  Nothing else would ever notice.
 
 from __future__ import annotations
 
+import base64
 import hashlib
 import json
 import os
@@ -512,6 +513,32 @@ def _check_versions(findings: list[str]) -> None:
                 f"{name} declares {got}, the Python package declares {want}: the two halves "
                 "of one install would be labelled differently"
             )
+
+    # The updater's pubkey must be the **base64** form -- the `.key.pub` file's content
+    # verbatim -- and not the two-line minisign text it decodes to.  Stored decoded,
+    # every release build dies at the signing step with `failed to decode pubkey ...
+    # Invalid symbol 32, offset 9` (that is the space in "untrusted comment"), and
+    # nothing in CI runs `tauri build`, so the first sign of it was the release itself.
+    pub = (conf.get("plugins") or {}).get("updater", {}).get("pubkey") or ""
+    if pub:
+        try:
+            text = base64.b64decode(pub, validate=True).decode("utf-8")
+            lines = text.splitlines()
+            blob = base64.b64decode(lines[1], validate=True)
+        except Exception as exc:
+            findings.append(
+                f"plugins.updater.pubkey is not the base64 form ({type(exc).__name__}: {exc}): "
+                "it must be the `.key.pub` file's content verbatim, not the minisign text "
+                "it decodes to"
+            )
+        else:
+            stated = lines[0].rsplit(":", 1)[-1].strip()
+            got = f"{int.from_bytes(blob[2:10], 'little'):016X}"
+            if len(blob) != 42 or blob[:2] != b"Ed" or got != stated:
+                findings.append(
+                    f"plugins.updater.pubkey decodes to {len(blob)} bytes with id {got}, but "
+                    f"its own comment says {stated}: not a well-formed minisign public key"
+                )
 
 
 def _cargo_package_version(text: str) -> str:

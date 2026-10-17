@@ -80,6 +80,19 @@ cargo tauri build --config '{"bundle":{"createUpdaterArtifacts":true}}'
 `version` / `notes` / `pub_date` / `platforms.<os>-<arch>.{url,signature}`。
 **Tauri 会在比对版本之前校验整份文件**，所以不要放半截的平台条目。
 
+带真密钥跑通后确认的三件事（2026-10-17）：
+
+| 事实 | 含义 |
+|---|---|
+| `createUpdaterArtifacts` 只出 `.sig`（`bundle/nsis/*.exe.sig`、`bundle/msi/*.msi.sig`） | **`latest.json` 要手写**，Tauri 不生成 |
+| `.sig` 是双层 base64：文件内容（外层）就是 `signature` 字段要填的东西 | 直接读文件、原样填，别去解它 |
+| 签名内部的 trusted comment 带 `timestamp` / `file` / **`version`** | 这就是 `requireSignedVersion` 的判据：清单里的版本必须与签名里的一致 |
+
+两个已经踩过的坑：
+
+* **`plugins.updater.pubkey` 必须是 `.key.pub` 文件的原文（base64）**，不是它解出来的两行 minisign 文本。存成解码后的形式，每次发版构建都会死在签名那步：`failed to decode pubkey ... Invalid symbol 32, offset 9`（那个 32 就是 `untrusted comment` 里的空格）。`desktop/sidecar/build.py` 现在会离线拦住它——CI 只跑 `cargo build`，不跑 `tauri build`，否则只能等发版时才发现。
+* **私钥密码从文件读时要掐掉 CRLF**（`tr -d '\r\n'`）：尾部的 `\r` 会混进密码，症状是“密码明明对却验签失败”。
+
 四条要记住的行为：
 
 | 情况 | 结果 |
