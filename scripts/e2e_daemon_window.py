@@ -59,38 +59,48 @@ def main() -> int:
     raised: list[str] = []
 
     def agent_side() -> None:
-        time.sleep(3.5)                                   # window loaded + polling
-        OUT["ipc_healthy"] = client.healthy()
-
-        r = client.call("cue", instruction="press RESET", target_in_s=2.5, lead_s=1.0,
-                        ioi_ms=300, tail_beats=3, expect_source="none",
-                        duration_s=6, open_panel=False)   # short budget -> deterministic end
-        OUT["cue"] = r
-        OUT["armed_at"] = time.time()
-
-        time.sleep(0.9)                                   # page pulls the schedule
-        OUT["page_has_cue_after_arm"] = win.window.evaluate_js("!!S.sched")
-        OUT["page_beats"] = win.window.evaluate_js("S.sched ? S.sched.beats.length : 0")
-        OUT["run_status_mid"] = client.call("status", run_id=r["run_id"])["status"]
-
-        # Wait out the budget; with expect_source="none" the cue must reach
-        # TIMEOUT on its own rather than hanging.
-        # Initialised so a deadline that expires before the first poll reports
-        # "unknown" -- a loud failure -- instead of raising UnboundLocalError.
-        st = "unknown"
-        deadline = time.time() + 9.0
-        while time.time() < deadline:
-            st = client.call("status", run_id=r["run_id"])["status"]
-            if st != "running":
-                break
-            time.sleep(0.4)
-        OUT["final_status"] = st
-        OUT["events"] = [e["kind"] for e in client.call("observe", run_id=r["run_id"])["events"]]
-        time.sleep(0.4)
+        # The whole body is guarded, and the window is destroyed in `finally`.
+        # Un-guarded, any hiccup -- an IPC call timing out on a loaded runner, say --
+        # killed this thread *before* `win.window.destroy()`, and pywebview's main
+        # loop then waited for a window nobody would close: a hang, not a failure.
+        # A CI run was cancelled after 30 minutes stuck here, which is worse than any
+        # red check: it says nothing and costs hours of runner time.
         try:
-            win.window.destroy()
-        except Exception:
-            pass
+            time.sleep(3.5)                               # window loaded + polling
+            OUT["ipc_healthy"] = client.healthy()
+
+            r = client.call("cue", instruction="press RESET", target_in_s=2.5, lead_s=1.0,
+                            ioi_ms=300, tail_beats=3, expect_source="none",
+                            duration_s=6, open_panel=False)   # short budget -> deterministic end
+            OUT["cue"] = r
+            OUT["armed_at"] = time.time()
+
+            time.sleep(0.9)                                   # page pulls the schedule
+            OUT["page_has_cue_after_arm"] = win.window.evaluate_js("!!S.sched")
+            OUT["page_beats"] = win.window.evaluate_js("S.sched ? S.sched.beats.length : 0")
+            OUT["run_status_mid"] = client.call("status", run_id=r["run_id"])["status"]
+
+            # Wait out the budget; with expect_source="none" the cue must reach
+            # TIMEOUT on its own rather than hanging.
+            # Initialised so a deadline that expires before the first poll reports
+            # "unknown" -- a loud failure -- instead of raising UnboundLocalError.
+            st = "unknown"
+            deadline = time.time() + 9.0
+            while time.time() < deadline:
+                st = client.call("status", run_id=r["run_id"])["status"]
+                if st != "running":
+                    break
+                time.sleep(0.4)
+            OUT["final_status"] = st
+            OUT["events"] = [e["kind"] for e in client.call("observe", run_id=r["run_id"])["events"]]
+        except Exception as exc:
+            OUT["error"] = f"{type(exc).__name__}: {exc}"
+        finally:
+            time.sleep(0.4)
+            try:
+                win.window.destroy()
+            except Exception:
+                pass
 
     threading.Thread(target=agent_side, name="agent", daemon=True).start()
 
@@ -112,6 +122,10 @@ def main() -> int:
     print(json.dumps(OUT, ensure_ascii=False, indent=2, default=str))
     print()
     check("IPC server reachable", OUT.get("ipc_healthy") is True)
+    # Its own check, so an exception inside the agent thread is reported as that
+    # rather than showing up as five downstream failures with no cause in sight.
+    check("the agent side finished without raising", not OUT.get("error"),
+          str(OUT.get("error") or ""))
     check("agent armed a cue over IPC", bool(OUT.get("cue", {}).get("run_id")),
           str(OUT.get("cue", {}).get("status")))
     check("shell layout active in the window", "shell" in str(OUT.get("body", "")),
