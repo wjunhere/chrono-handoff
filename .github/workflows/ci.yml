@@ -84,11 +84,11 @@ jobs:
         shell: bash
         run: |
           set -e
-          timeout 600 python scripts/e2e_panel.py
-          timeout 600 python scripts/e2e_panel_attach.py
-          timeout 600 python scripts/e2e_state_paths.py
-          timeout 600 python scripts/e2e_update_window.py
-          timeout 600 python scripts/e2e_audio.py
+          python scripts/with_deadline.py 600 python scripts/e2e_panel.py
+          python scripts/with_deadline.py 600 python scripts/e2e_panel_attach.py
+          python scripts/with_deadline.py 600 python scripts/e2e_state_paths.py
+          python scripts/with_deadline.py 600 python scripts/e2e_update_window.py
+          python scripts/with_deadline.py 600 python scripts/e2e_audio.py
 
       - name: The wheel must contain its UI
         # 这里曾经是 `package-data = ["statics/*.wav"]`，而 statics 下根本没有 .wav
@@ -170,15 +170,15 @@ jobs:
           set -e
           # Each suite gets a deadline.  A suite that hangs used to take the whole
           # job with it: one run sat here for 30 minutes and had to be cancelled,
-          # which says nothing and costs hours of runner time.  `timeout` is Git
-          # Bash's (coreutils) on this runner, and rc=124 names the suite that
-          # stopped answering.
-          timeout 600 python scripts/e2e_window.py
-          timeout 600 python scripts/e2e_ui_layout.py
-          timeout 600 python scripts/e2e_theme_drag.py
-          timeout 600 python scripts/e2e_split_mode.py
-          timeout 600 python scripts/e2e_daemon_window.py
-          timeout 600 python scripts/e2e_desktop_shell.py
+          # which says nothing and costs hours of runner time.  The deadline runner is
+          # Python because `timeout(1)` is not on macOS runners and on Windows it is a
+          # different program; rc=124 names the suite that stopped answering.
+          python scripts/with_deadline.py 600 python scripts/e2e_window.py
+          python scripts/with_deadline.py 600 python scripts/e2e_ui_layout.py
+          python scripts/with_deadline.py 600 python scripts/e2e_theme_drag.py
+          python scripts/with_deadline.py 600 python scripts/e2e_split_mode.py
+          python scripts/with_deadline.py 600 python scripts/e2e_daemon_window.py
+          python scripts/with_deadline.py 600 python scripts/e2e_desktop_shell.py
 
   sidecar:
     name: frozen conductor (${{ matrix.os }})
