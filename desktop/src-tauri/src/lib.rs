@@ -949,6 +949,12 @@ fn run_selftest(window: WebviewWindow) {
             "shellCall('begin_drag'); shellCall('update_drag', 120, 90); shellCall('end_drag');",
         );
         std::thread::sleep(Duration::from_millis(800));
+        // Also before the *after* measurement: the window can be minimised during
+        // the 800 ms this waits -- measured, by a hand on the machine -- and then
+        // the "after" rect is Windows' sentinel rather than the drag's result.  The
+        // `window=` field below still says it was minimised, so the run is honest
+        // about a measurement it could not make properly.
+        normal_before_measuring(&window);
         if let (Some(b), Ok(a)) = (before, logical_rect(&window)) {
             // The page sends a TOTAL delta, so the result must be the delta
             // itself -- not a multiple of it.

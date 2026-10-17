@@ -139,7 +139,14 @@ def main() -> int:
     try:
         if not wait_panel(panel, time.monotonic() + 30):
             tail = log_path.read_text(encoding="utf-8", errors="replace").strip()[-400:]
-            print(f"  daemon never answered; its log says:\n{tail}")
+            print(f"  daemon never answered on {panel}; its log says:\n{tail or '(empty)'}")
+            # The next three facts are what turns "it hung" into a diagnosis: an
+            # empty log with a live pid means it died before its first line, an
+            # empty log with a dead pid means it died silently, and an IPC port that
+            # answers means the panel is the part that failed.
+            print(f"  pid alive: {proc.poll() is None} | ipc {ipc} answers: "
+                  f"{ConductorClient(port=ipc, timeout_s=2.0).healthy()} | "
+                  f"panel {panel} answering: {port_free(panel) is False}")
             return 1
         client = ConductorClient(port=ipc, timeout_s=5.0)
 
@@ -206,14 +213,27 @@ def main() -> int:
     finally:
         if proc.poll() is None:
             # `taskkill` only exists on Windows, and this suite runs on three
-            # platforms -- the first CI run died here with FileNotFoundError
+            # platforms -- the second CI run died here with FileNotFoundError
             # 'taskkill' on macOS, which is a bug in the test, not the product.
             if sys.platform == "win32":
                 subprocess.run(["taskkill", "/F", "/T", "/PID", str(proc.pid)],
                                capture_output=True)
             else:
                 os.killpg(os.getpgid(proc.pid), signal.SIGTERM)
-            proc.wait(timeout=15)
+            try:
+                proc.wait(timeout=15)
+            except subprocess.TimeoutExpired:
+                # Cleanup must never be the thing that crashes the suite: the third
+                # CI run raised TimeoutExpired here, on macOS, *after* the real
+                # finding (the daemon never answered) had already been reported --
+                # and a traceback hides everything that came before it.
+                print(f"  [WARN] the daemon (pid {proc.pid}) ignored SIGTERM for 15s; "
+                      "killing it", flush=True)
+                if sys.platform == "win32":
+                    subprocess.run(["taskkill", "/F", "/PID", str(proc.pid)], capture_output=True)
+                else:
+                    os.killpg(os.getpgid(proc.pid), signal.SIGKILL)
+                proc.wait(timeout=15)
         shutil.rmtree(home, ignore_errors=True)
 
     print()
