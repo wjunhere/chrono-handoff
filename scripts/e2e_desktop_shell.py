@@ -701,7 +701,18 @@ def main() -> int:
             time.sleep(0.5)
         check("shell opened a visible window", bool(win and win["visible"]))
 
-        text = read_log()
+        # Wait for the page's own report instead of reading the log once.  The window
+        # is visible before its page has finished loading, and on a CI runner that gap
+        # was long enough that the page had not called the seam yet -- which was then
+        # reported as "the bundled page did not reach Rust", a much bigger claim than
+        # "the page was still loading".
+        text = ""
+        deadline = time.monotonic() + 30
+        while time.monotonic() < deadline:
+            text = read_log()
+            if "[shell] apply_theme" in text:
+                break
+            time.sleep(0.5)
         check("bundled page reached Rust through the seam",
               "[shell] apply_theme" in text,
               f"{[l for l in text.splitlines() if l.startswith('[shell]')][:2]}")
