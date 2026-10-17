@@ -26,7 +26,7 @@ from typing import Any, Callable
 
 from . import CONTRACT_VERSION, __version__
 from .calibrate import CalibrationStore, simulate_calibration
-from .clock import CLOCK, Scheduler, drift_report
+from .clock import CLOCK, Firing, Scheduler, drift_report
 from .conductor import Conductor
 from .audio import AUDIO_CHOICES
 from .cue import BellAudio, NullAudio, default_audio, describe_audio
@@ -389,11 +389,47 @@ def _selftest_grid_budget() -> tuple[bool, str]:
     return ok, f"count={n} fired={len(fired)} (extra firings = schedule leak between runs)"
 
 
+def _grid_burst_report(firings: list[Firing], hits: list[float], every: float,
+                       n: int) -> tuple[bool, str]:
+    """Judge a stalled grid: dropped-and-counted, or replayed in a burst?
+
+    Pure, so the judgement can be tested against fabricated firings.  The two
+    patterns differ only in the offsets of the beats that follow a near-zero gap,
+    which is the whole distinction, and no scheduler can be asked to produce a
+    replay on demand.
+    """
+    dropped = sum(f.skipped for f in firings)
+    gaps = [(b - a) * 1000.0 for a, b in zip(hits, hits[1:])]
+    offs = [f.offset * 1000.0 for f in firings]
+    # A burst is a *replay*, and a small gap cannot show it on its own.  On an
+    # absolute grid a beat that lands L ms late is followed by the next beat only
+    # `every - L` later, so 4.9ms is what a 115ms lateness looks like on a 30ms grid
+    # -- with nothing replayed at all.  That is what a loaded macOS runner reported
+    # as `bursts=1`, for a run that had dropped 3 of its 10 beats.
+    #
+    # What separates a replay from a late beat is the *second* beat's own offset: on
+    # time after a late beat (the drop path advances the next deadline past the
+    # firing), but still overdue when several due beats are fired in one pass.
+    replayed = [
+        (round((b.at - a.at) * 1000.0, 3), round(b.offset * 1000.0, 1))
+        for a, b in zip(firings, firings[1:])
+        if (b.at - a.at) < 0.001 and b.offset >= every * 0.5
+    ]
+    # And every beat that was not fired has to be *counted*, not silently gone: that
+    # is what "dropped and counted" means, and it is what a replay breaks.
+    accounted = len(hits) + dropped == n
+    ok = not replayed and accounted and len(hits) < n
+    return ok, (f"fired={len(hits)} dropped={dropped} accounted={accounted} "
+                f"gaps={[round(g, 1) for g in gaps]} offsets={[round(o, 1) for o in offs]} "
+                f"replayed={replayed}")
+
+
 def _selftest_grid_skip() -> tuple[bool, str]:
     """When the process stalls, missed beats are dropped and counted, not
     replayed in a burst."""
     import threading as _th
 
+    every = 0.03
     s = Scheduler("skip").start()
     hits: list[float] = []
     blocked = _th.Event()
@@ -406,17 +442,11 @@ def _selftest_grid_skip() -> tuple[bool, str]:
             blocked.set()
             time.sleep(0.12)          # stall for ~4 intervals of 30ms
 
-    s.grid(t0, 0.03, cb, count=n, name="sk")
+    s.grid(t0, every, cb, count=n, name="sk")
     blocked.wait(2.0)
     time.sleep(0.3)
     s.stop()
-    gaps = [(b - a) * 1000 for a, b in zip(hits, hits[1:])]
-    worst_gap = max(gaps) if gaps else 0.0
-    # One gap may legitimately be ~one interval (we slept *inside* a callback,
-    # which delays the next beat); what must NOT happen is a burst of catches.
-    small = sum(1 for g in gaps if g < 5.0)
-    ok = small == 0 and worst_gap > 0
-    return ok, f"fired={len(hits)} min_gap={min(gaps) if gaps else 0:.1f}ms max_gap={worst_gap:.1f}ms bursts={small}"
+    return _grid_burst_report([f for f in s.firings if f.name == "sk"], hits, every, n)
 
 
 def _selftest_late_addition() -> tuple[bool, str]:
