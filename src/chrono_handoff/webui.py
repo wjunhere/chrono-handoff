@@ -34,6 +34,8 @@ import sys
 import threading
 import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+
+from .local_http import LocalHTTPServer
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Callable
 
@@ -365,7 +367,7 @@ class CuePanel:
                 except Exception as exc:
                     self._json({"error": f"{type(exc).__name__}: {exc}"}, 500)
 
-        class QuietServer(ThreadingHTTPServer):
+        class QuietServer(LocalHTTPServer):
             # Closed long-polls during shutdown are routine; do not log them.
             def handle_error(self, request: Any, client_address: Any) -> None:
                 exc = sys.exc_info()[1]

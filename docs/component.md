@@ -333,6 +333,12 @@ chrono-handoff: a conductor is already answering on 127.0.0.1:8791.
 `journal_flushed` 恒为 `true`，**因为它是构造成立的**：`_emit` 在调用线程里 `open`/`write`
 每个事件，所以一个已经结束的 run 早就落了盘，并没有什么东西可 flush。
 
+### 四点八、绑端口不能查 DNS
+
+`HTTPServer.server_bind` 会调 `socket.getfqdn(host)` 去填 `server_name` —— 一次**反向解析**，就发生在绑定路径里。解析慢或不通的机器上它按秒计：CI 的 macOS runner 实测 **35.0 s**（同机 `socket.getfqdn("127.0.0.1")` 单独跑也是 35.002 s），而那 35 s 全落在面板那一步的启动标记里 —— `chrono daemon` 起完之后 35 秒内什么都不服务，日志一出来却完全正常。Linux（`/etc/hosts` 立刻答）与 Windows（本机 14 ms）看不出来，所以这是个只在别人的机器上发作的 bug。
+
+面板与按压源因此都用 `chrono_handoff.local_http.LocalHTTPServer`：绑定路径不解析主机名，`server_name` 直接取字面 host。`scripts/e2e_panel.py` 会把 `socket.getfqdn` 换成一个抛异常的函数、再绑一次面板与按压源，任何平台都能证明这条规则没被破坏。
+
 ## 五、`tail_beats` 为什么默认是 6（不是可选装饰）
 
 这是 M1 实测暴露的问题，值得单独说。

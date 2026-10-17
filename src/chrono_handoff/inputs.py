@@ -27,6 +27,8 @@ import threading
 import time
 from dataclasses import dataclass, field
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+
+from .local_http import LocalHTTPServer
 from typing import Any, Callable, Iterable, Protocol
 
 from .clock import CLOCK
@@ -279,7 +281,7 @@ class HttpSource:
                 else:
                     self._respond(404, b'{"error":"not found"}')
 
-        self._server = ThreadingHTTPServer((self._host, self._port), _Handler)
+        self._server = LocalHTTPServer((self._host, self._port), _Handler)
         self._server.daemon_threads = True
         self.bound_port = self._server.server_address[1]
         self._thread = threading.Thread(target=self._server.serve_forever, name="chrono-http", daemon=True)

@@ -23,6 +23,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
 from chrono_handoff import CONTRACT_VERSION, __version__  # noqa: E402
 from chrono_handoff.conductor import Conductor  # noqa: E402
+from chrono_handoff.inputs import HttpSource  # noqa: E402
 from chrono_handoff.webui import CuePanel  # noqa: E402
 
 
@@ -312,6 +313,43 @@ def main() -> int:
         check("conductor.cue() arms and starts", r2["status"] == "running", f"{r2['run_id']}")
         s2 = get(base + "/api/schedule?run_id=" + r2["run_id"])
         check("schedule available for the new run", len(s2.get("beats") or []) >= 3, f"{len(s2.get('beats') or [])} beats")
+
+        # ---- 12. the bind path must not ask DNS who we are --------------
+        # `HTTPServer.server_bind` calls `socket.getfqdn(host)`; measured at 35.0s on
+        # a GitHub macOS runner, inside the bind, so the conductor served nothing for
+        # 35s after it started.  Poisoning the lookup proves the fix on any machine,
+        # rather than relying on this one's resolver happening to be fast.
+        import socket
+
+        calls: list[str] = []
+        real_getfqdn = socket.getfqdn
+
+        def poisoned(host: str = "") -> str:
+            calls.append(host)
+            raise RuntimeError("getfqdn must not be on a bind path")
+
+        probe = Conductor(audio="null", visual=False,
+                          journal_dir=str(Path(__file__).resolve().parents[1] / "logs" / "_panel" / "dns"))
+        probe.start()
+        src = HttpSource(host="127.0.0.1", port=0)
+        socket.getfqdn = poisoned  # type: ignore[assignment]
+        try:
+            bound = CuePanel(probe, host="127.0.0.1", port=0)
+            # `start_background`, not `bind`: `stop()` calls `shutdown()`, which waits
+            # for a serve loop that a bind-only server never started.
+            bound.start_background()
+            bound_port = bound.port
+            bound.stop()
+            src.open()
+            src_port = src.bound_port
+        finally:
+            socket.getfqdn = real_getfqdn
+            src.close()
+            probe.stop()
+        check("the panel binds without resolving its own host name",
+              bound_port > 0 and not calls, f"port {bound_port}, getfqdn calls: {calls}")
+        check("the press source binds without resolving it either",
+              src_port > 0 and not calls, f"port {src_port}, getfqdn calls: {calls}")
 
     finally:
         panel.stop()
