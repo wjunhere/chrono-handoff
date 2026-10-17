@@ -69,7 +69,7 @@ cd desktop && npx tauri icon ../src/chrono_handoff/statics/icon.svg -o src-tauri
   图标的 3 px，用导轨本身的透明度会直接消失进底标（试过 0.26/0.34，再试 0.34/0.42，
   都在 32 px 下太淡）。
 
-验证方式是从**已安装的 exe 里抽出图标资源**看的（`a scratch directory` 下的 pwsh 脚本，
+验证方式是从**已安装的 exe 里抽出图标资源**看的（一个临时目录里的 pwsh 脚本，
 `Icon.ExtractAssociatedIcon`），而不是看 SVG——“新图标真的进了二进制”才算是真的。
 
 一个构建期陷阱：改完 `icon.svg` 后 `cargo build` 不一定会重跑资源编译

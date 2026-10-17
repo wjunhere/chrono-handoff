@@ -303,5 +303,7 @@ Windows 11 / CPython 3.13，详见 [`docs/implementation-notes.md`](implementati
 
 ## 许可
 
-代码 MIT。`src/chrono_handoff/statics/fonts/` 下的字体文件（Inter、JetBrains Mono）
-遵循 [SIL Open Font License 1.1](https://openfontlicense.org/)，允许再分发与捆绑。
+代码 MIT（见 [LICENSE](LICENSE)）。`src/chrono_handoff/statics/fonts/` 下的字体文件
+（Inter、JetBrains Mono）遵循 [SIL Open Font License 1.1](https://openfontlicense.org/)，
+允许再分发与捆绑 —— 它们的声明放在 [THIRD-PARTY.md](THIRD-PARTY.md)，不插进 MIT 正文
+（插进去会让 GitHub 认不出许可，而认不出的许可法律上读作“保留所有权利”）。
