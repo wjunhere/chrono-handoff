@@ -163,17 +163,28 @@ def main() -> int:
             )
 
             # Establish once whether synthetic mouse input reaches the window.
-            # Everything below depends on it, so probe it rather than assume.
+            # Everything below depends on it, so probe it rather than assume --
+            # and once means *once*: mixing the two paths inside a run is worse
+            # than either.  A real drag leaves the host's drag baseline and the
+            # persisted size in a state the bridge sequence then computes its own
+            # deltas from, and the result was a window that would not shrink.
+            #
+            # A landing (the rectangle changed) is necessary but not sufficient:
+            # the press can land on a *different* grip, which counts as movement
+            # while every edge-specific assertion below still fails.  Requiring
+            # the drag to move the width *and* the height it was aimed at is the
+            # cheapest signal that this is the grip it meant to grab; a run that
+            # does not clear that bar takes the bridge for the whole suite.
             x, y, w0, h0 = rect()
             drag(x + w0 - 3, y + h0 - 3, x + w0 + 110, y + h0 + 90, edge='se')
             _, _, w1, h1 = rect()
-            OUT["synthetic_input"] = (w1, h1) != (w0, h0)
+            landed = w1 >= w0 + 50 and h1 >= h0 + 40
+            OUT["synthetic_input"] = landed
             global INPUT_UNAVAILABLE
-            if not OUT["synthetic_input"]:
-                INPUT_UNAVAILABLE = True
+            INPUT_UNAVAILABLE = not landed
             OUT["foreground"] = OUT.get("foreground") or (
                 ctypes.windll.user32.GetForegroundWindow() == hwnd())
-            if not OUT["synthetic_input"]:
+            if not landed:
                 resize_by_api("se", 110, 90)
                 _, _, w1, h1 = rect()
 

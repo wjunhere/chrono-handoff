@@ -1175,6 +1175,49 @@ impl UpdateState {
             ..Default::default()
         }
     }
+
+    fn not_installed(why: String) -> Self {
+        Self {
+            phase: "not-installed".into(),
+            detail: Some(why),
+            ..Default::default()
+        }
+    }
+}
+
+/// Why this *build* must not update itself, if it must not.
+///
+/// Two signals, both unambiguous -- this is a hard gate, so it may only fire on
+/// things that cannot mean anything else:
+///
+/// * a debug build (`cargo build`, `cargo run`, every e2e suite).  Its sidecar is
+///   a copy sitting beside it, so it looks "bundled" and every other check agrees;
+/// * a shell started from a source checkout (`CHRONO_PYTHON` / `CHRONO_SIDECAR`),
+///   which `conductor_command()` treats as a deliberate override.
+///
+/// Both would accept an update and then be replaced by a *different* program in a
+/// different place, which is confusing in a way that looks like a bug rather than
+/// a wrong answer.  Anything more speculative than these two ("is this exe under
+/// the install directory?") is a warning instead -- guessing wrong there would
+/// silently disable the feature in the build that is supposed to ship it.
+fn update_refusal() -> Option<String> {
+    if cfg!(debug_assertions) {
+        return Some(
+            "this is a development build: an update would install a release somewhere else \
+             and leave this copy untouched, so it is refused here.  Run the installed app to \
+             update it."
+                .to_string(),
+        );
+    }
+    for var in ["CHRONO_PYTHON", "CHRONO_SIDECAR"] {
+        if std::env::var_os(var).is_some() {
+            return Some(format!(
+                "this shell was started from a source checkout ({var} is set), so it is not the \
+                 installed pair and must not replace it."
+            ));
+        }
+    }
+    None
 }
 
 /// Whether an install may proceed, from the conductor's `/api/update-ready`.
@@ -1220,7 +1263,7 @@ type UpdateHandle = std::sync::Arc<std::sync::Mutex<UpdateSlot>>;
 fn updater(app: &tauri::AppHandle) -> Option<tauri_plugin_updater::Updater> {
     use tauri_plugin_updater::UpdaterExt;
 
-    if configured_pubkey(app).is_empty() {
+    if update_refusal().is_some() || configured_pubkey(app).is_empty() {
         return None;
     }
     app.updater_builder()
@@ -1320,13 +1363,18 @@ fn stale_update_hint(p: &PendingUpdate, dir: &std::path::Path) -> String {
 fn update_status(app: tauri::AppHandle, slot: tauri::State<'_, UpdateHandle>) -> UpdateState {
     let mut guard = slot.lock().unwrap();
     if guard.state.phase.is_empty() {
-        // A status query must never answer with nothing: "no check has run yet"
-        // and "this build cannot update at all" are different situations, and
-        // only one of them is fixable by pressing the button.
-        guard.state = if updater(&app).is_none() {
-            UpdateState::unconfigured()
-        } else {
-            UpdateState { phase: "idle".into(), detail: Some("no check yet".into()), ..Default::default() }
+        // A status query must never answer with nothing: "no check has run yet",
+        // "this build cannot update at all", and "this is not the installed shape"
+        // are three different situations, and only one of them is worth pressing a
+        // button about.
+        guard.state = match update_refusal() {
+            Some(why) => UpdateState::not_installed(why),
+            None if updater(&app).is_none() => UpdateState::unconfigured(),
+            None => UpdateState {
+                phase: "idle".into(),
+                detail: Some("no check yet".into()),
+                ..Default::default()
+            },
         };
     }
     guard.state.clone()
@@ -1350,6 +1398,10 @@ fn start_check(app: &tauri::AppHandle, handle: &UpdateHandle) -> UpdateState {
     {
         let mut guard = handle.lock().unwrap();
         if guard.state.phase == "checking" || guard.state.phase == "downloading" {
+            return guard.state.clone();
+        }
+        if let Some(why) = update_refusal() {
+            guard.state = UpdateState::not_installed(why);
             return guard.state.clone();
         }
         if updater(&app).is_none() {
@@ -1393,6 +1445,25 @@ fn start_check(app: &tauri::AppHandle, handle: &UpdateHandle) -> UpdateState {
         guard.state.clone()
     });
     announced
+}
+
+/// Where an installer would put this app, on the platforms where that is known.
+///
+/// Measured during the end-to-end install test: Tauri's per-user NSIS bundle
+/// installs to `%LOCALAPPDATA%\chrono-handoff` with no elevation.  Only that case
+/// is reported -- elsewhere `None` -- because a guess here would be used to decide
+/// whether a *warning* fires, and a warning based on a guess teaches people to
+/// ignore warnings.
+fn installed_app_dir() -> Option<std::path::PathBuf> {
+    #[cfg(windows)]
+    {
+        let base = std::env::var_os("LOCALAPPDATA")?;
+        Some(std::path::PathBuf::from(base).join("chrono-handoff"))
+    }
+    #[cfg(not(windows))]
+    {
+        None
+    }
 }
 
 /// Install the update that has been downloaded, once the conductor agrees.
@@ -1440,6 +1511,20 @@ fn update_install(slot: tauri::State<'_, UpdateHandle>) -> Result<UpdateState, S
         guard.state.phase = "downloading".into();
         guard.state.progress = Some(0.0);
         guard.state.detail = None;
+    }
+    // Not a refusal: a relocated release build can still be used, and refusing it
+    // would disable the feature in a build that is otherwise fine.  But silently
+    // installing to the standard location while running from somewhere else is
+    // how "it updated and then reverted" gets reported as a bug.
+    if let (Some(expected), Ok(here)) = (installed_app_dir(), std::env::current_exe()) {
+        if !here.starts_with(&expected) {
+            println!(
+                "[shell] WARNING: running from {} but an update installs to {}; this copy will \
+                 not be the one updated",
+                here.display(),
+                expected.display()
+            );
+        }
     }
     let reported = handle.lock().unwrap().state.clone();
     let progress_handle = handle.clone();

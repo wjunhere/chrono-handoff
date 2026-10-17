@@ -1425,6 +1425,7 @@ function renderUpdate(s) {
   switch (st.phase) {
     case "idle":         lines.push(st.detail || "已是最新版本"); break;
     case "unconfigured": lines.push("此构建没有编译进更新公钥，无法自我更新"); break;
+    case "not-installed": lines.push("这不是安装形态的构建，不能自我更新"); break;
     case "checking":     lines.push("正在检查…"); break;
     case "downloading":  lines.push("正在下载 " + Math.round((st.progress || 0) * 100) + "%"); break;
     case "ready":        lines.push("有新版 " + (st.version || "?") + "，可以安装"); break;
