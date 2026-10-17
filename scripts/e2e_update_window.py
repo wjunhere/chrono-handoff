@@ -22,6 +22,7 @@ from __future__ import annotations
 import json
 import os
 import shutil
+import signal
 import socket
 import subprocess
 import sys
@@ -30,6 +31,7 @@ import time
 import urllib.error
 import urllib.request
 from pathlib import Path
+from typing import Any
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "src"))
@@ -124,10 +126,15 @@ def main() -> int:
     url = f"http://127.0.0.1:{panel}"
     print(f"\n-- a real daemon: ipc={ipc} panel={panel} --")
     with log_path.open("w", encoding="utf-8") as log:
+        # Its own process group on POSIX, so the cleanup below can signal all of it;
+        # Windows needs nothing there (taskkill walks the child list).  Typed Any
+        # because these kwargs are splatted into Popen, whose parameters all differ
+        # in type -- anything narrower than Any rejects the call outright.
+        detach: dict[str, Any] = {} if sys.platform == "win32" else {"start_new_session": True}
         proc = subprocess.Popen(
             [sys.executable, "-m", "chrono_handoff.cli", "daemon",
              "--port", str(ipc), "--panel-port", str(panel), "--audio", "null"],
-            cwd=str(ROOT), env=env, stdout=log, stderr=subprocess.STDOUT,
+            cwd=str(ROOT), env=env, stdout=log, stderr=subprocess.STDOUT, **detach,
         )
     try:
         if not wait_panel(panel, time.monotonic() + 30):
@@ -198,7 +205,15 @@ def main() -> int:
               not ConductorClient(port=ipc, timeout_s=1.0).healthy())
     finally:
         if proc.poll() is None:
-            subprocess.run(["taskkill", "/F", "/T", "/PID", str(proc.pid)], capture_output=True)
+            # `taskkill` only exists on Windows, and this suite runs on three
+            # platforms -- the first CI run died here with FileNotFoundError
+            # 'taskkill' on macOS, which is a bug in the test, not the product.
+            if sys.platform == "win32":
+                subprocess.run(["taskkill", "/F", "/T", "/PID", str(proc.pid)],
+                               capture_output=True)
+            else:
+                os.killpg(os.getpgid(proc.pid), signal.SIGTERM)
+            proc.wait(timeout=15)
         shutil.rmtree(home, ignore_errors=True)
 
     print()

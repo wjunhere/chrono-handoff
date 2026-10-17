@@ -145,10 +145,19 @@ jobs:
           ls -l desktop/src-tauri/binaries/
 
       - name: Build the shell
+        # `shell: bash` because of the `rm`/`||` below; the runner has Git Bash, and the
+        # default here would be PowerShell, where those are not commands.
+        shell: bash
         # runner 自带 Rust 工具链；没有就当场失败，而不是让下一步报一个看不懂的错
         run: |
           rustc --version
           cargo build --manifest-path desktop/src-tauri/Cargo.toml
+          # `cargo build` 把 externalBin 复制到 target/debug/ 旁边（就是发布包里那个
+          # 位置），于是外壳会优先找到这个空占位文件，而不是下面窗口套件传的
+          # CHRONO_PYTHON —— 实测症状是 `panel :8852=False` 和 shell.json 里
+          # launcher 不是 'bundled'。删掉它，外壳就会走到"源码检出"那条规则上。
+          rm -f desktop/src-tauri/target/debug/chrono-core.exe
+          ls -l desktop/src-tauri/target/debug/chrono-core.exe 2>/dev/null || echo "no bundled sidecar beside the dev binary (intended)"
 
       - name: Shell geometry tests
         # 这些是纯算式（边方向 / 夹紧 / 累计位移 / 窗口位置与恢复），不需要窗口，
