@@ -70,14 +70,32 @@ def get_json(url: str, method: str = "GET") -> tuple[int, dict]:
             return exc.code, {"raw": body}
 
 
-def wait_panel(port: int, deadline: float) -> bool:
+def wait_panel(port: int, deadline: float, trace: list[str] | None = None) -> bool:
+    """Wait for the panel, recording *when* it changed state.
+
+    The timeline is the diagnosis, and silence alone cannot give it: "bound at
+    +29.8s" means the daemon was slow to start, while "answering at +0.4s" means
+    it came up immediately and something else failed to reach it.  Both look
+    identical to a loop that only says "no".
+    """
+    start = time.monotonic()
+    last = ""
     while time.monotonic() < deadline:
         try:
             if get_json(f"http://127.0.0.1:{port}/api/health")[0] == 200:
+                if trace is not None:
+                    trace.append(f"+{time.monotonic() - start:.1f}s answering 200")
                 return True
         except (urllib.error.URLError, OSError):
             pass
+        state = port_state(port, timeout=0.3)
+        if state != last:
+            if trace is not None:
+                trace.append(f"+{time.monotonic() - start:.1f}s {state}")
+            last = state
         time.sleep(0.3)
+    if trace is not None:
+        trace.append(f"+{time.monotonic() - start:.1f}s gave up, last state {last or 'unknown'}")
     return False
 
 
@@ -87,7 +105,7 @@ def port_free(port: int) -> bool:
         return s.connect_ex(("127.0.0.1", port)) != 0
 
 
-def port_state(port: int) -> str:
+def port_state(port: int, timeout: float = 2.0) -> str:
     """`unbound`, `bound` or `answering`.
 
     The difference between the first two is the whole diagnosis, and a request
@@ -97,15 +115,19 @@ def port_state(port: int) -> str:
     reported as "nothing is listening on either port" while what was true is that
     the IPC port was bound and stuck -- which points at the code between the bind
     and the accept loop, a completely different search.
+
+    "answering" means bytes came back, not that the bytes were a 200 -- a server
+    that answers every request with 500 is still "answering" and must not be
+    described as absent.
     """
     try:
-        conn = socket.create_connection(("127.0.0.1", port), timeout=1.0)
+        conn = socket.create_connection(("127.0.0.1", port), timeout=timeout)
     except OSError:
         # Refused or unreachable: nothing is bound.  Only *this* failure means that.
         return "unbound"
     with conn:
         try:
-            conn.settimeout(2.0)
+            conn.settimeout(timeout)
             conn.sendall(b"GET /api/health HTTP/1.0\r\n\r\n")
             return "answering" if conn.recv(16) else "bound"
         except OSError:
@@ -113,6 +135,37 @@ def port_state(port: int) -> str:
             # which is an `OSError` -- treating it with the connect failure above is
             # how the first version of this reported a listening socket as unbound.
             return "bound"
+
+
+def raw_http(port: int, path: str, timeout: float = 3.0) -> str:
+    """One request over a bare socket, reported as the wire saw it.
+
+    Deliberately not urllib: when two clients disagree, the cruder one is the
+    better witness about whether anything is there.
+    """
+    try:
+        with socket.create_connection(("127.0.0.1", port), timeout=timeout) as s:
+            s.settimeout(timeout)
+            s.sendall(f"GET {path} HTTP/1.0\r\nHost: 127.0.0.1\r\n\r\n".encode())
+            lines = s.recv(200).decode("utf-8", "replace").splitlines()
+            return lines[0] if lines else "(closed with no response line)"
+    except OSError as exc:
+        return f"{type(exc).__name__}: {exc}"
+
+
+def urllib_probe(port: int) -> str:
+    """The same GET through urllib, which is what this suite actually failed on.
+
+    Catches everything: `wait_panel` only guards against `URLError`/`OSError`, so
+    if urllib were raising something else the suite would have crashed there
+    instead of timing out -- and guessing which of those happened is exactly what
+    this probe exists to stop.
+    """
+    try:
+        status, body = get_json(f"http://127.0.0.1:{port}/api/health")
+        return f"HTTP {status} {str(body)[:120]}"
+    except Exception as exc:  # noqa: BLE001 - the point is to name whatever it was
+        return f"{type(exc).__name__}: {exc}"
 
 
 def dump_stacks(proc: "subprocess.Popen[Any]", label: str) -> None:
@@ -129,8 +182,12 @@ def dump_stacks(proc: "subprocess.Popen[Any]", label: str) -> None:
     if sys.platform == "win32":
         return
     print(f"  asking the {label} (pid {proc.pid}) where it is:")
-    subprocess.run(["ps", "-o", "stat=,wchan=", "-p", str(proc.pid)],
-                   capture_output=True, text=True)
+    state = subprocess.run(["ps", "-o", "stat=,wchan=", "-p", str(proc.pid)],
+                           capture_output=True, text=True)
+    # Printed, not captured: the first version of this ran `ps` and threw the answer
+    # away, which is how a stopped process (T) and a sleeping one (S) stayed
+    # indistinguishable for another round.
+    print(f"    ps: {state.stdout.strip() or state.stderr.strip() or '(no output)'}")
     try:
         os.kill(proc.pid, signal.SIGABRT)
     except OSError as exc:
@@ -195,19 +252,30 @@ def main() -> int:
             # which is what this suite reported for the macOS hang until the banner
             # was traced to stderr+flush inside the product.
             [sys.executable, "-u", "-m", "chrono_handoff.cli", "daemon",
+             # --verbose: the daemon then reports how long each start-up step took, so a
+             # slow start names the line instead of only exceeding a deadline.
+             "--verbose",
              "--port", str(ipc), "--panel-port", str(panel), "--audio", "null"],
             cwd=str(ROOT), env=env, stdout=log, stderr=subprocess.STDOUT, **detach,
         )
     try:
-        if not wait_panel(panel, time.monotonic() + 30):
-            print(f"  daemon never answered on {panel}")
+        trace: list[str] = []
+        if not wait_panel(panel, time.monotonic() + 30, trace):
+            print("  daemon never answered on the panel port")
+            print(f"  timeline: {' -> '.join(trace)}")
             print(f"  pid alive: {proc.poll() is None} | ipc {ipc}: {port_state(ipc)} | "
                   f"panel {panel}: {port_state(panel)}")
-            # Ask it where it is before killing it.  `port_state` separates "nothing
-            # bound" from "bound, and never accepting" -- from a request both look
-            # like silence, and that difference is most of the diagnosis.
+            # The same request that failed, reported three ways: what a raw socket
+            # sees, what the product's own client sees, and what the test's urllib
+            # sees.  They disagree on macOS, and which one is broken decides whether
+            # the product or the test is at fault.
+            client = ConductorClient(port=ipc, timeout_s=2.0)
+            print(f"  ConductorClient(ipc).healthy() -> {client.healthy()}")
+            print(f"  raw GET panel/api/health -> {raw_http(panel, '/api/health')}")
+            print(f"  urllib GET panel/api/health -> {urllib_probe(panel)}")
             dump_stacks(proc, label="daemon")
-            print(f"  its log says:\n{log_path.read_text(encoding='utf-8', errors='replace').strip()[-600:] or '(empty)'}")
+            text = log_path.read_text(encoding="utf-8", errors="replace")
+            print(f"  its log ({len(text)} chars):\n{text[-4000:] or '(empty)'}")
             return 1
         client = ConductorClient(port=ipc, timeout_s=5.0)
 

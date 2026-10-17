@@ -56,12 +56,26 @@ def run_daemon(
     window_on_top: bool = True,
     window_hidden: bool = False,
 ) -> int:
+    # Where a slow start goes, on request.  Startup waits are pathological to debug
+    # from outside -- a conductor that is merely slow looks identical to one that is
+    # stuck, and the only honest answers are "it never came up" and "which line took
+    # the time".  Under `--verbose` the daemon says.
+    _t = time.monotonic()
+    _marks: list[str] = []
+
+    def _mark(label: str) -> None:
+        nonlocal _t
+        now = time.monotonic()
+        _marks.append(f"{label} {(now - _t) * 1000:.0f}ms")
+        _t = now
+
     conductor = Conductor(
         journal_dir=journal_dir,
         audio=audio,
         visual=visual,
         verbose=verbose,
     )
+    _mark("conductor")
 
     # The native-window mode owns its own IPC bind and its own main loop, so it
     # must branch **before** anything here claims a port.  Doing it later bound
@@ -79,12 +93,15 @@ def run_daemon(
         )
 
     conductor.start()
+    _mark("start")
     server = ConductorServer(conductor, host=host, port=port)
     # Bind BEFORE announcing anything: a second conductor must fail loudly and
     # early, not print a cheerful "listening" banner and then die.
     server.bind()
+    _mark("ipc bind")
     port = server.port
     write_pidfile(port, {"audio": conductor.audio.name, "journal_dir": str(conductor.journal_dir)})
+    _mark("pidfile")
 
     # One stand-down path for Ctrl-C, SIGTERM and an update: the update path's
     # hook just makes this loop return, and the `finally` below does the rest.
@@ -113,6 +130,7 @@ def run_daemon(
     if panel:
         from .webui import CuePanel
 
+        _mark("webui import")
         try:
             panel_srv = CuePanel(conductor, host=host, port=panel_port, auto_open=panel_open)
             panel_srv.start_background()
@@ -120,6 +138,7 @@ def run_daemon(
         except SystemExit as exc:
             panel_srv = None
             panel_url = f"(unavailable: {exc})"
+        _mark("panel")
 
         if panel_srv is not None:
             # on_panel_open's contract is ``-> None``; open_browser() returns a
@@ -132,6 +151,10 @@ def run_daemon(
 
             conductor.on_panel_open(_open_panel)
 
+    # Printed *before* the banner: if the banner write itself is where a start-up
+    # stalls, a report that only comes after it reports nothing.
+    if verbose:
+        print(f"[daemon] startup: {' | '.join(_marks)}", file=sys.stderr, flush=True)
     print(
         f"chrono-handoff conductor listening on {host}:{port}\n"
         f"  cue panel  : {panel_url}\n"
