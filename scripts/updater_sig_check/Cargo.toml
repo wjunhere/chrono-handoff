@@ -1,0 +1,11 @@
+[package]
+name = "updater_sig_check"
+version = "0.0.0"
+edition = "2024"
+publish = false
+
+# The crate `tauri-plugin-updater` itself verifies with.  Checking a release artifact with a
+# second implementation of the format would only prove that the two implementations agree;
+# this proves what the app will do.
+[dependencies]
+minisign-verify = "0.3"

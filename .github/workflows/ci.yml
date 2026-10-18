@@ -76,6 +76,13 @@ jobs:
         # is the *only* thing wrong.
         run: chrono selftest --tolerant-timing
 
+      - name: The release check's gates still work
+        # `scripts/release.py --selftest` 用伪造的输入驱动发布前那几道结构闸门：
+        # 清单版本与签名版本不符、url 指向别的文件/别的 tag/别的仓库、少了 platform
+        # 条目、公钥或签名被存成解码后的文本、签名来自另一把密钥 —— 每一条都必须被抓到。
+        # 发布是整个流程里唯一不可撤回的一步，闸门自己得先被校准过。
+        run: python scripts/release.py --selftest
+
       - name: Headless suites
         # 这几个只碰 HTTP 与文件系统：不开窗口、不需要显示器、不需要音频设备。
         # 窗口套件在 windows-ui 里，不在这里假装能跑。
@@ -163,6 +170,12 @@ jobs:
         # 这些是纯算式（边方向 / 夹紧 / 累计位移 / 窗口位置与恢复），不需要窗口，
         # 所以它们必须过；窗口套件里那份是"顺带也验一次"。
         run: cargo test --manifest-path desktop/src-tauri/Cargo.toml
+
+      - name: The release tool must still build
+        # `scripts/release.py` 在打印 `gh release create` 之前会用它验签。这里钉的是
+        # 同一个 crate（minisign-verify 0.3，tauri-plugin-updater 用的那个），所以发布时
+        # 跑的检查就是应用自己会跑的检查。在这一步构建，是为了让发布这条路不会悄悄烂掉。
+        run: cargo build --manifest-path scripts/updater_sig_check/Cargo.toml
 
       - name: Window suites
         shell: bash

@@ -77,6 +77,28 @@ npx tauri signer generate -w <仓库外的路径>/chrono-handoff.key
 cargo tauri build --config '{"bundle":{"createUpdaterArtifacts":true}}'
 ```
 
+不过实际发版不要手打上面那些步骤，用 `scripts/release.py`：它把安装包拷到暂存目录、
+写 `latest.json`，然后**先验签再发布**。
+
+```bash
+python scripts/release.py --notes notes.md            # 过闸门 + 暂存 + 验证，打印发布命令
+python scripts/release.py --notes notes.md --publish  # 连发布一起做，并回拉端点逐字节比对
+python scripts/release.py --selftest                  # 只校准闸门（不需要密钥、不联网）
+```
+
+它按顺序卡这几道，任一道不过就不给发布命令：
+
+| 闸门 | 不过时的含义 |
+|---|---|
+| 工作区干净 | 安装包不对应任何提交 |
+| HEAD 的 CI 是绿的 | 发布的东西没人验过（`--wait-ci 900` 可以等） |
+| `build.py --stale-check` + `--no-build` | 冻结的 conductor 不是这一版，或四处版本号不一致 |
+| 结构闸门 | 清单版本 ≠ 签名版本、url 指向别的文件/tag/仓库、少了 platform 条目、公钥或签名被存成解码后的文本 |
+| **真验签** | `scripts/updater_sig_check` 用 `minisign-verify 0.3`（`tauri-plugin-updater` 用的同一个 crate）拿**编译进二进制的公钥**验安装包字节 |
+
+最后一道是关键：换一份 minisign 实现去验，只能证明两份实现互相认同；同一个 crate、同一把公钥，
+验的就是应用接下来会做的事。
+
 `latest.json` 挂在 GitHub release 上（`releases/latest/download/latest.json`），字段是
 `version` / `notes` / `pub_date` / `platforms.<os>-<arch>.{url,signature}`。
 **Tauri 会在比对版本之前校验整份文件**，所以不要放半截的平台条目。
