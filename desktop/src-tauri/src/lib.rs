@@ -1460,16 +1460,17 @@ fn start_check(app: &tauri::AppHandle, handle: &UpdateHandle) -> UpdateState {
 /// is reported -- elsewhere `None` -- because a guess here would be used to decide
 /// whether a *warning* fires, and a warning based on a guess teaches people to
 /// ignore warnings.
-fn installed_app_dir() -> Option<std::path::PathBuf> {
-    #[cfg(windows)]
-    {
-        let base = std::env::var_os("LOCALAPPDATA")?;
-        Some(std::path::PathBuf::from(base).join("chrono-handoff"))
-    }
-    #[cfg(not(windows))]
-    {
-        None
-    }
+/// Whether an installer put this copy here, judged by NSIS's own marker.
+///
+/// Not "is it under `%LOCALAPPDATA%`".  NSIS records where it installed and reinstalls
+/// there, so a copy in `D:\tools\chrono-handoff` is updated in place -- comparing against
+/// the standard location told such a copy that it "will not be the one updated" while it
+/// was being updated correctly.  An `uninstall.exe` beside the exe is what every NSIS
+/// install has and what a relocated or development copy does not.
+fn looks_installed(exe: &std::path::Path) -> bool {
+    exe.parent()
+        .map(|dir| dir.join("uninstall.exe").is_file())
+        .unwrap_or(false)
 }
 
 /// Install the update that has been downloaded, once the conductor agrees.
@@ -1519,16 +1520,15 @@ fn update_install(slot: tauri::State<'_, UpdateHandle>) -> Result<UpdateState, S
         guard.state.detail = None;
     }
     // Not a refusal: a relocated release build can still be used, and refusing it
-    // would disable the feature in a build that is otherwise fine.  But silently
-    // installing to the standard location while running from somewhere else is
-    // how "it updated and then reverted" gets reported as a bug.
-    if let (Some(expected), Ok(here)) = (installed_app_dir(), std::env::current_exe()) {
-        if !here.starts_with(&expected) {
+    // would disable the feature in a build that is otherwise fine.  But a copy that no
+    // installer put here will not be the one the update replaces, and that is how "it
+    // updated and then reverted" gets reported as a bug.
+    if let Ok(here) = std::env::current_exe() {
+        if !looks_installed(&here) {
             println!(
-                "[shell] WARNING: running from {} but an update installs to {}; this copy will \
-                 not be the one updated",
-                here.display(),
-                expected.display()
+                "[shell] WARNING: {} has no uninstall.exe beside it, so no installer put this \
+                 copy here; an update will replace the installed copy, not this one",
+                here.display()
             );
         }
     }
@@ -1854,8 +1854,9 @@ pub fn run() {
 
 #[cfg(test)]
 mod tests {
-    use super::{contract_ok, install_decision, min_size, resized_rect, stale_update_hint, to_logical,
-                visible_origin, Monitor, PendingUpdate, SavedGeometry, CONTRACT};
+    use super::{contract_ok, install_decision, looks_installed, min_size, resized_rect,
+                stale_update_hint, to_logical, visible_origin, Monitor, PendingUpdate,
+                SavedGeometry, CONTRACT};
 
     const PRIMARY: Monitor = Monitor { x: 0.0, y: 0.0, w: 1920.0, h: 1067.0 };
 
@@ -1903,6 +1904,22 @@ mod tests {
         let seq = [10.0, 25.0, 50.0, 90.0];
         // The last total is the result -- never the sum of all of them.
         assert_eq!(r("e", seq[seq.len() - 1], 0.0).2, 460.0 + 90.0);
+    }
+
+    #[test]
+    fn a_copy_counts_as_installed_only_with_the_uninstaller_beside_it() {
+        // The marker, not the location: an install to a custom directory is still the copy
+        // an update replaces, and a release build copied out of the installer is not.
+        let dir = std::env::temp_dir().join(format!("chrono-install-check-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let exe = dir.join("chrono-handoff.exe");
+        std::fs::write(&exe, b"x").unwrap();
+        assert!(!looks_installed(&exe), "nothing but the exe here yet");
+        std::fs::write(dir.join("uninstall.exe"), b"x").unwrap();
+        assert!(looks_installed(&exe), "NSIS wrote its uninstaller: this is an install");
+        assert!(!looks_installed(std::path::Path::new("")), "a path with no parent is not one");
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]

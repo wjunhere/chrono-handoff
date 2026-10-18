@@ -11,6 +11,7 @@
 | cue 是**给一个人的、带截止时刻的承诺** | 绝不能在有 cue 处于 `pending/running` 时重启。反之，重启会把人留在一个死掉的窗口前 |
 | conductor 是独立进程，占着 8790/8791；Windows 上跑着的 exe 换不掉 | 必须先让它**自己退出**（journal 要落盘、端口要释放） |
 | 装在 `%LOCALAPPDATA%`（免管理员，实测） | 更新不需要 UAC。若当初选了 per-machine，自动更新每次都要 UAC，等于没有 |
+| 装到自定义目录（如 `B:\software\chrono-handoff`）也能就地更新（实测） | NSIS 记住上次装在哪并装回原处，所以更新器不按固定路径找；外壳据此判断"这份会不会被替换"时看的是 exe 旁边的 `uninstall.exe`，不是安装位置 |
 | 状态全在 `~/.chrono-handoff` | 更新碰不到用户状态——这是能做安全更新的前提 |
 
 ## 二、分工
