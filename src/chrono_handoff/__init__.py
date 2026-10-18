@@ -6,7 +6,7 @@ monotonic deadlines.  The human is treated as an effector with a
 measurable, calibratable latency offset.
 """
 
-__version__ = "0.1.0"
+__version__ = "0.1.1"
 
 #: Version of the contract between parts that are shipped separately.
 #:

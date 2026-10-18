@@ -1,6 +1,6 @@
 [project]
 name = "chrono-handoff"
-version = "0.1.0"
+version = "0.1.1"
 description = "Time-anchored human-machine action handoff: let the agent schedule, let the timer execute."
 requires-python = ">=3.10"
 dependencies = []

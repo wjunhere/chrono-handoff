@@ -1,6 +1,6 @@
 [package]
 name = "chrono-handoff"
-version = "0.1.0"
+version = "0.1.1"
 description = "chrono-handoff desktop shell: owns the window, not the clock"
 authors = ["wjun"]
 edition = "2024"

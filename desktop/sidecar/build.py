@@ -497,8 +497,11 @@ def _check_versions(findings: list[str]) -> None:
     conf = json.loads((ROOT / "desktop/src-tauri/tauri.conf.json").read_text(encoding="utf-8"))
     declared: list[tuple[str, str, str]] = [
         ("tauri.conf.json", str(conf.get("version")), version),
-        ("Cargo.toml", _cargo_package_version((ROOT / "desktop/src-tauri/Cargo.toml")
-                                               .read_text(encoding="utf-8")), version),
+        ("Cargo.toml", _section_version((ROOT / "desktop/src-tauri/Cargo.toml")
+                                               .read_text(encoding="utf-8"),
+                                               "[package]", "Cargo.toml"), version),
+        ("pyproject.toml", _section_version((ROOT / "pyproject.toml").read_text(encoding="utf-8"),
+                                               "[project]", "pyproject.toml"), version),
         ("panel.html", _declared(ROOT / "src/chrono_handoff/statics/panel.html",
                                  r"const PAGE_CONTRACT = (\d+);"), str(contract)),
         ("src-tauri/src/lib.rs", _declared(ROOT / "desktop/src-tauri/src/lib.rs",
@@ -541,20 +544,21 @@ def _check_versions(findings: list[str]) -> None:
                 )
 
 
-def _cargo_package_version(text: str) -> str:
-    """`version` from Cargo.toml's `[package]` section.
+def _section_version(text: str, header: str, where: str) -> str:
+    """`version` from a TOML file's `[header]` section.
 
     Walked line by line rather than matched with a regex, because every
-    dependency's `version = "..."` has exactly the same shape.
+    dependency's `version = "..."` has exactly the same shape -- and `pyproject.toml`
+    sits next to wheels that would be built with whatever version it happened to say.
     """
     section = ""
     for raw in text.splitlines():
         line = raw.strip()
         if line.startswith("["):
             section = line
-        elif section == "[package]" and line.startswith("version"):
+        elif section == header and line.startswith("version"):
             return line.split("=", 1)[1].strip().strip('"')
-    raise SystemExit("self-check: no version in Cargo.toml's [package] section")
+    raise SystemExit(f"self-check: no version in {where}'s {header} section")
 
 
 def _declared(path: Path, pattern: str) -> str:
