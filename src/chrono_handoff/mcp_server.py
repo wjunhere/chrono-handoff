@@ -27,7 +27,9 @@ import socket
 import sys
 import time
 from pathlib import Path
-from typing import Any
+from typing import Annotated, Any, Literal, TypedDict
+
+from pydantic import Field
 
 from . import CONTRACT_VERSION, __version__
 from .calibrate import CalibrationStore, task_signature
@@ -136,11 +138,130 @@ def _plan_from_args(args: dict[str, Any]) -> CuePlan:
     return plan_from_dict(args)
 
 
-def tool_submit(args: dict[str, Any]) -> dict[str, Any]:
+# --------------------------------------------------------------------------
+# tool signatures ARE the published schema
+# --------------------------------------------------------------------------
+#
+# These used to be ``def tool_cue(args: dict[str, Any])`` with a hand-written
+# JSON Schema parked in ``TOOLS[name]["schema"]``.  ``FastMCP.add_tool`` has no
+# ``inputSchema`` parameter -- it derives the schema from the function signature
+# via ``func_metadata(fn)`` -- so the hand-written schemas were never published:
+# every tool advertised one property called ``args``, the agent could not see a
+# single parameter (``target_in_s``, ``lead_s``, ``expect_source``...), and every
+# call had to be wrapped in an extra ``args`` object to satisfy validation.
+#
+# So the signature is now the single source of truth, and the descriptions live
+# where pydantic reads them: ``Annotated[..., Field(description=...)]`` on each
+# parameter, ``TypedDict`` docstrings for the nested structures.  Nothing here is
+# duplicated -- changing a default changes both the schema and the behaviour.
+
+
+class ExpectSignal(TypedDict, total=False):
+    """Physical evidence that the human acted.  May never arrive.
+
+    A timeout is a normal, well-defined outcome of this spec, not a failure of
+    the cue: the conductor does not wait for a person, it stops waiting for one.
+    """
+
+    source: Annotated[
+        Literal["console_key", "stdin_line", "http", "serial", "sim", "none"],
+        Field(description="Where the evidence comes from. 'none' means the panel's own press counts."),
+    ]
+    pattern: Annotated[str, Field(description="Regex matched against the payload; empty = any reading counts.")]
+    timeout_s: Annotated[float, Field(description="Seconds after the GO beat to keep listening.")]
+    min_offset_ms: Annotated[
+        float,
+        Field(description="Ignore readings earlier than this offset (stray input from a previous step)."),
+    ]
+
+
+class WindowAction(TypedDict, total=False):
+    """One machine-side action, handed to an effector."""
+
+    type: Annotated[str, Field(description="Effector-specific action kind, e.g. 'serial_write' or 'log'.")]
+    value: Annotated[str, Field(description="Payload for the action.")]
+
+
+class OnWindow(TypedDict, total=False):
+    """Machine actions swept between two offsets.  The machine does not wait."""
+
+    start_off_ms: Annotated[float, Field(description="Window opens this many ms after the cue origin.")]
+    end_off_ms: Annotated[float, Field(description="Window closes this many ms after the cue origin.")]
+    interval_ms: Annotated[float, Field(description="Retry interval inside the window (default 300).")]
+    actions: Annotated[list[WindowAction], Field(description="Actions to try, in order, on every sweep.")]
+
+
+def tool_submit(
+    instruction: Annotated[str, Field(description="What the human should physically do, e.g. 'press RESET once'.")],
+    target_in_s: Annotated[
+        float | None, Field(description="Seconds from cue start at which the PHYSICAL action should land.")
+    ] = None,
+    lead_s: Annotated[float, Field(description="Countdown length before the GO beat (default 3).")] = 3.0,
+    ioi_ms: Annotated[
+        float, Field(description="Beat interval in ms (default 500). ~500ms lets humans anticipate rather than react.")
+    ] = 500.0,
+    tail_beats: Annotated[
+        int, Field(description="Beats kept pulsing after GO so the human entrains instead of reacting (default 6).")
+    ] = 6,
+    audio: Annotated[
+        bool, Field(description="Beep on each beat. Strongly recommended: it roughly halves human timing error.")
+    ] = True,
+    visual: Annotated[bool, Field(description="Terminal/panel countdown display.")] = True,
+    offset_s: Annotated[
+        float,
+        Field(description="Predicted human offset in seconds (positive = human fires late). Moves the cue only, never machine actions."),
+    ] = 0.0,
+    duration_s: Annotated[
+        float, Field(description="Hard budget from cue start; guarantees a terminal verdict (default 60).")
+    ] = 60.0,
+    expect_signal: Annotated[
+        ExpectSignal | None,
+        Field(description="Physical evidence that the human acted. May never arrive; a timeout is a normal outcome."),
+    ] = None,
+    on_window: Annotated[
+        OnWindow | None, Field(description="Machine actions swept between two offsets. The machine does not wait for the human.")
+    ] = None,
+    meta: Annotated[
+        dict[str, Any], Field(description="Echoed back; use for task id / target / effector selection.")
+    ] = Field(default_factory=dict),
+    paused: Annotated[bool, Field(description="Register but do not start the clock yet.")] = False,
+    queue: Annotated[
+        bool,
+        Field(
+            description="Wait for the cue already on screen to finish instead of overwriting it "
+            "(default true). Only matters for plans with audio or visual; set false to let two "
+            "cues run at once."
+        ),
+    ] = True,
+) -> dict[str, Any]:
+    """Submit a time-anchored action plan and return immediately.
+
+    The conductor renders the beat cue to the human and fires machine actions on
+    absolute deadlines WITHOUT waiting for you.  Do not block on the result: end
+    your turn, then poll chrono_observe / chrono_wait.  Time fields are offsets
+    in seconds from the cue origin.  ``offset_s`` is the predicted human offset
+    (positive = the human tends to fire late) and shifts the countdown so human
+    and machine meet at the same instant.
+    """
     # Validated client-side (fast, clear errors) and re-normalised server-side
     # (defence in depth: the daemon must not trust its callers).
-    plan = _plan_from_args(args)
-    return _client().call("submit", plan=_plan_to_wire(plan), paused=bool(args.get("paused", False)))
+    plan = _plan_from_args(
+        {
+            "instruction": instruction,
+            "target_in_s": target_in_s,
+            "lead_s": lead_s,
+            "ioi_ms": ioi_ms,
+            "tail_beats": tail_beats,
+            "audio": audio,
+            "visual": visual,
+            "offset_s": offset_s,
+            "duration_s": duration_s,
+            "expect_signal": expect_signal,
+            "on_window": on_window,
+            "meta": meta,
+        }
+    )
+    return _client().call("submit", plan=_plan_to_wire(plan), paused=paused, queue=queue)
 
 
 def _plan_to_wire(plan: CuePlan) -> dict[str, Any]:
@@ -149,59 +270,133 @@ def _plan_to_wire(plan: CuePlan) -> dict[str, Any]:
     return asdict(plan)
 
 
-def tool_observe(args: dict[str, Any]) -> dict[str, Any]:
-    return _client().call("observe", run_id=args["run_id"], since_seq=int(args.get("since_seq", 0)))
+def tool_observe(
+    run_id: Annotated[str, Field(description="Run to read.")],
+    since_seq: Annotated[int, Field(description="Return only events with a sequence number above this.")] = 0,
+) -> dict[str, Any]:
+    """Incrementally read a run's event journal.
+
+    This is the intended way to follow a run: cheap, non-blocking, resumable
+    with ``since_seq``.
+    """
+    return _client().call("observe", run_id=run_id, since_seq=int(since_seq))
 
 
-def tool_wait(args: dict[str, Any]) -> dict[str, Any]:
+def tool_wait(
+    run_id: Annotated[str, Field(description="Run to wait on.")],
+    timeout_ms: Annotated[int, Field(description="Longest block in ms (capped at 25000). Default 8000.")] = 8000,
+) -> dict[str, Any]:
+    """Block for AT MOST timeout_ms, then return a snapshot (never 'wait until done').
+
+    A client-side timeout therefore costs one query, not the run.  Keep it short.
+    """
     return _client().call(
         "wait",
-        run_id=args["run_id"],
-        timeout_s=min(float(args.get("timeout_ms", 8000)) / 1000.0, 25.0),
+        run_id=run_id,
+        timeout_s=min(float(timeout_ms) / 1000.0, 25.0),
     )
 
 
-def tool_cancel(args: dict[str, Any]) -> dict[str, Any]:
-    return _client().call("cancel", run_id=args["run_id"], reason=args.get("reason", "cancelled"))
+def tool_cancel(
+    run_id: Annotated[str, Field(description="Run to abort.")],
+    reason: Annotated[str, Field(description="Recorded in the journal next to the abort.")] = "cancelled",
+) -> dict[str, Any]:
+    """Abort an in-flight run.  Safe to call at any time; idempotent."""
+    return _client().call("cancel", run_id=run_id, reason=reason)
 
 
-def tool_status(args: dict[str, Any]) -> dict[str, Any]:
-    if args.get("run_id"):
-        return _client().call("status", run_id=args["run_id"], include_events=bool(args.get("include_events", False)))
+def tool_status(
+    run_id: Annotated[str, Field(description="One run; omit for the list of recent runs.")] = "",
+    include_events: Annotated[bool, Field(description="Include the full journal in the reply.")] = False,
+) -> dict[str, Any]:
+    """Status of one run, or the list of recent runs.  Non-blocking."""
+    if run_id:
+        return _client().call("status", run_id=run_id, include_events=include_events)
     return _client().call("list")
 
 
-def tool_cue(args: dict[str, Any]) -> dict[str, Any]:
-    """One-call cue: pop the panel, arm the grid, start the clock.
+def tool_cue(
+    instruction: Annotated[str, Field(description="What the person should do, e.g. 'press RESET once'.")],
+    target_in_s: Annotated[
+        float, Field(description="Seconds from now until the physical action should happen (default 6).")
+    ] = 6.0,
+    lead_s: Annotated[float, Field(description="Countdown length before the GO beat (default 3).")] = 3.0,
+    ioi_ms: Annotated[float, Field(description="Beat interval ms (default 500).")] = 500.0,
+    tail_beats: Annotated[
+        int, Field(description="Beats to keep pulsing after GO so the person can entrain instead of react (default 6).")
+    ] = 6,
+    audio: Annotated[bool, Field(description="Beep in the browser panel (default true).")] = True,
+    visual: Annotated[bool, Field(description="Render the grid in the panel (default true).")] = True,
+    open_panel: Annotated[bool, Field(description="Open/raise the panel window (default true).")] = True,
+    prepare_only: Annotated[
+        bool, Field(description="Arm without starting; the human presses Start in the panel.")
+    ] = False,
+    expect_source: Annotated[
+        Literal["console_key", "stdin_line", "http", "serial", "sim", "none"] | None,
+        Field(description="How the human's action is observed (default: the panel's own press counts as 'none')."),
+    ] = None,
+    duration_s: Annotated[float, Field(description="Hard budget (default 30).")] = 30.0,
+    queue: Annotated[
+        bool,
+        Field(
+            description="Wait for the cue already on screen to finish instead of overwriting it "
+            "(default true). Set false to let two cues run at once."
+        ),
+    ] = True,
+    run_id: Annotated[str, Field(description="Reuse a caller-chosen run id instead of a generated one.")] = "",
+) -> dict[str, Any]:
+    """Cue a human to perform a physical action at a precise instant.
 
-    This is the tool the agent should reach for in the common case.  Note what
-    it does **not** do: it never waits for the human.  It returns the schedule
-    (absolute times) so the agent can carry on and check back later.  Blocking
-    here would reintroduce exactly the problem this project exists to solve.
+    Arms an interactive countdown panel the person can see and hear.  Returns
+    IMMEDIATELY with a run_id and the absolute schedule -- do NOT wait for the
+    human.  The cue keeps running without you.  Use it whenever you need a person
+    to press / plug / power-cycle something at a moment you specify.
 
     ``prepare_only=True`` arms without starting, which is what the panel's own
     "Start now" button is for -- useful when the agent wants the human to be
     ready before the countdown begins.
     """
-    return _client().call("cue", **args)
+    params: dict[str, Any] = {
+        "instruction": instruction,
+        "target_in_s": target_in_s,
+        "lead_s": lead_s,
+        "ioi_ms": ioi_ms,
+        "tail_beats": tail_beats,
+        "audio": audio,
+        "visual": visual,
+        "open_panel": open_panel,
+        "paused": prepare_only,
+        "duration_s": duration_s,
+        "queue": queue,
+    }
+    if expect_source is not None:
+        params["expect_source"] = expect_source
+    if run_id:
+        params["run_id"] = run_id
+    return _client().call("cue", **params)
 
 
-def tool_calibrate(args: dict[str, Any]) -> dict[str, Any]:
+def tool_calibrate(
+    key: Annotated[str, Field(description="Task signature; omit to report every signature.")] = "",
+    offset_ms: Annotated[
+        float | None, Field(description="A manual measurement to fold in. Requires key.")
+    ] = None,
+    reset: Annotated[bool, Field(description="Clear the store (for this key, or all of it).")] = False,
+) -> dict[str, Any]:
     """Report (or reset) the adaptive human-offset estimate.
 
     Kept in the model-visible surface on purpose: the *plan* the agent writes
-    next depends on it.  ``suggested_offset_ms`` for a task signature is the
-    number the agent should pass back as ``offset_s`` so that the human and the
-    machine converge on the same instant.
+    next depends on it.  ``offset_ms`` for a task signature is the number the
+    agent should pass back as ``offset_s`` so that the human and the machine
+    converge on the same instant.
     """
     store = CalibrationStore()
-    if args.get("reset"):
-        store.reset(args.get("key") or None)
+    if reset:
+        store.reset(key or None)
         return {"reset": True, "items": {k: v.offset_ms for k, v in store.all().items()}}
-    if args.get("key") and args.get("offset_ms") is not None:
-        cal = store.observe(args["key"], float(args["offset_ms"]), source="manual")
+    if key and offset_ms is not None:
+        cal = store.observe(key, float(offset_ms), source="manual")
         return {"key": cal.key, "offset_ms": cal.offset_ms, "n": cal.n, "mad_ms": cal.spread_ms()}
-    key = args.get("key")
     if key:
         cal = store.get(key)
         return {
@@ -220,128 +415,38 @@ def tool_calibrate(args: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+#: Registry of tools, keyed by the name the agent sees.  Deliberately only
+#: ``fn`` + ``description``: the parameter schema is derived from ``fn``'s own
+#: signature, so there is exactly one place to change a parameter and no way for
+#: a hand-written copy to drift out of sync with the code that runs.
 TOOLS: dict[str, dict[str, Any]] = {
     "chrono_submit": {
         "fn": tool_submit,
-        "description": (
-            "Submit a time-anchored action plan and return immediately. "
-            "The conductor renders the beat cue to the human and fires machine actions on absolute "
-            "deadlines WITHOUT waiting for you. Do not block on the result: end your turn, then poll "
-            "chrono_observe / chrono_wait. Time fields are offsets in seconds from the cue origin. "
-            "`offset_s` is the predicted human offset (positive = the human tends to fire late) and "
-            "shifts the countdown so human and machine meet at the same instant."
-        ),
-        "schema": {
-            "type": "object",
-            "properties": {
-                "instruction": {"type": "string", "description": "What the human should physically do, e.g. 'press RESET once'."},
-                "lead_s": {"type": "number", "description": "Countdown length before the GO beat (default 3)."},
-                "ioi_ms": {"type": "number", "description": "Beat interval in ms (default 500). ~500ms lets humans anticipate rather than react."},
-                "audio": {"type": "boolean", "description": "Beep on each beat. Strongly recommended: it roughly halves human timing error."},
-                "visual": {"type": "boolean", "description": "Terminal countdown bar."},
-                "target_in_s": {"type": "number", "description": "Seconds from cue start at which the PHYSICAL action should land."},
-                "offset_s": {"type": "number", "description": "Predicted human offset in seconds (positive = human fires late). Moves the cue only, never machine actions."},
-                "duration_s": {"type": "number", "description": "Hard budget from cue start; guarantees a terminal verdict (default 60)."},
-                "expect_signal": {
-                    "type": "object",
-                    "description": "Physical evidence that the human acted. May never arrive; timeouts are a normal outcome.",
-                    "properties": {
-                        "source": {"type": "string", "enum": ["console_key", "stdin_line", "http", "serial", "sim", "none"]},
-                        "pattern": {"type": "string"},
-                        "timeout_s": {"type": "number"},
-                        "min_offset_ms": {"type": "number", "description": "Ignore signals earlier than this (stray input from a previous step)."},
-                    },
-                },
-                "on_window": {
-                    "type": "object",
-                    "description": "Machine actions swept between two offsets. The machine does not wait for the human.",
-                    "properties": {
-                        "start_off_ms": {"type": "number"},
-                        "end_off_ms": {"type": "number"},
-                        "interval_ms": {"type": "number"},
-                        "actions": {"type": "array", "items": {"type": "object"}},
-                    },
-                },
-                "meta": {"type": "object", "description": "Echoed back; use for task id / target / effector selection."},
-            },
-            "required": ["instruction"],
-        },
+        "description": tool_submit.__doc__ or "",
     },
     "chrono_observe": {
         "fn": tool_observe,
-        "description": (
-            "Incrementally read a run's event journal. This is the intended way to follow a run: "
-            "cheap, non-blocking, resumable with since_seq."
-        ),
-        "schema": {
-            "type": "object",
-            "properties": {"run_id": {"type": "string"}, "since_seq": {"type": "integer"}},
-            "required": ["run_id"],
-        },
+        "description": tool_observe.__doc__ or "",
     },
     "chrono_wait": {
         "fn": tool_wait,
-        "description": (
-            "Block for AT MOST timeout_ms, then return a snapshot (never 'wait until done'). "
-            "A client-side timeout therefore costs one query, not the run. Keep it short."
-        ),
-        "schema": {
-            "type": "object",
-            "properties": {"run_id": {"type": "string"}, "timeout_ms": {"type": "integer"}},
-            "required": ["run_id"],
-        },
+        "description": tool_wait.__doc__ or "",
     },
     "chrono_cancel": {
         "fn": tool_cancel,
-        "description": "Abort an in-flight run. Safe to call at any time; idempotent.",
-        "schema": {"type": "object", "properties": {"run_id": {"type": "string"}, "reason": {"type": "string"}}, "required": ["run_id"]},
+        "description": tool_cancel.__doc__ or "",
     },
     "chrono_status": {
         "fn": tool_status,
-        "description": "Status of one run, or the list of recent runs. Non-blocking.",
-        "schema": {"type": "object", "properties": {"run_id": {"type": "string"}, "include_events": {"type": "boolean"}}},
+        "description": tool_status.__doc__ or "",
     },
     "chrono_cue": {
         "fn": tool_cue,
-        "description": (
-            "Cue a human to perform a physical action at a precise instant, by arming an interactive "
-            "countdown panel they can see and hear. Returns IMMEDIATELY with a run_id and the absolute "
-            "schedule -- do NOT wait for the human. The cue keeps running without you. Use it whenever "
-            "you need a person to press / plug / power-cycle something at a moment you specify."
-        ),
-        "schema": {
-            "type": "object",
-            "properties": {
-                "instruction": {"type": "string", "description": "What the person should do, e.g. 'press RESET once'."},
-                "target_in_s": {"type": "number", "description": "Seconds from now until the physical action should happen (default 6)."},
-                "lead_s": {"type": "number", "description": "Countdown length before the GO beat (default 3)."},
-                "ioi_ms": {"type": "number", "description": "Beat interval ms (default 500)."},
-                "tail_beats": {"type": "number", "description": "Beats to keep pulsing after GO so the person can entrain instead of react (default 6)."},
-                "audio": {"type": "boolean", "description": "Beep in the browser panel (default true)."},
-                "visual": {"type": "boolean", "description": "Render the grid in the panel (default true)."},
-                "open_panel": {"type": "boolean", "description": "Open/raise the panel window (default true)."},
-                "prepare_only": {"type": "boolean", "description": "Arm without starting; the human presses Start in the panel."},
-                "expect_source": {"type": "string", "description": "console_key | stdin_line | http | serial | sim | none -- how the human's action is observed (default: the panel itself)."},
-                "duration_s": {"type": "number", "description": "Hard budget (default 30)."},
-            },
-            "required": ["instruction"],
-        },
+        "description": tool_cue.__doc__ or "",
     },
     "chrono_calibrate": {
         "fn": tool_calibrate,
-        "description": (
-            "Read or update the learned human offset. Pass key to read one signature, or key+offset_ms "
-            "to fold in a manual measurement, or reset=true to clear. Use the reported offset_ms as "
-            "`offset_s` in the next chrono_submit so the human and the machine converge."
-        ),
-        "schema": {
-            "type": "object",
-            "properties": {
-                "key": {"type": "string"},
-                "offset_ms": {"type": "number"},
-                "reset": {"type": "boolean"},
-            },
-        },
+        "description": tool_calibrate.__doc__ or "",
     },
 }
 
@@ -783,6 +888,22 @@ def build_mcp_server() -> Any:
         fn = spec["fn"]
         mcp.add_tool(fn, name=name, description=spec["description"])
     return mcp
+
+
+def published_tool_schemas(server: Any | None = None) -> dict[str, dict[str, Any]]:
+    """The input schemas the client will actually see, for tests and `chrono doctor`.
+
+    Exists because "the schema is derived from the signature" is a claim that
+    was already wrong once without anybody noticing: ``add_tool`` silently fell
+    back to the signature of ``tool(args: dict)``, so every tool advertised a
+    single property named ``args`` and the real parameters were undiscoverable.
+    Asking the server what it publishes is the only check that cannot lie.
+    """
+    import asyncio
+
+    srv = server if server is not None else build_mcp_server()
+    tools = asyncio.run(srv.list_tools())
+    return {t.name: t.input_schema for t in tools}
 
 
 def main() -> int:
