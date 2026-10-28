@@ -49,6 +49,16 @@ from .model import CuePlan, RunStatus, SignalSpec
 PANEL_PATH = Path(__file__).with_name("statics") / "panel.html"
 FONTS_DIR = Path(__file__).with_name("statics") / "fonts"
 ICON_PATH = Path(__file__).with_name("statics") / "icon.svg"
+#: The same mark as a Windows .ico, for the native window's *taskbar* icon.
+#: pywebview falls back to `ExtractIconW(sys.executable)` when `webview.start()`
+#: is given no icon -- which is the Python logo, so the window looked like a
+#: script rather than like this app.  Generated from ``ICON_PATH`` (the single
+#: source: the page's favicon, the shell's bundle icons and this file are the same
+#: mark) and committed, because a wheel must not need node to build.
+#:
+#:     cd desktop && npx tauri icon ../src/chrono_handoff/statics/icon.svg -o <tmp>
+#:     cp <tmp>/icon.ico ../src/chrono_handoff/statics/icon.ico
+ICON_ICO_PATH = Path(__file__).with_name("statics") / "icon.ico"
 DEFAULT_PANEL_PORT = 8790
 
 #: Origins allowed to call this API cross-origin.  Exactly one caller needs it:

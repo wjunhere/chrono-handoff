@@ -50,10 +50,36 @@ INVOKE ERR: set_on_top not allowed. Plugin not found
 所有平台图标的源：
 
 ```bash
-cd desktop && npx tauri icon ../src/chrono_handoff/statics/icon.svg -o src-tauri/icons
+cd desktop && npx tauri icon ../src/chrono_handoff/statics/icon.svg -o <tmp>
+cp <tmp>/icon.ico ../src/chrono_handoff/statics/icon.ico   # pywebview 窗口的任务栏图标
 ```
 
 两个用途共一份文件，是为了让浏览器标签页和任务栏不会各长一个样式。
+
+### 三个宿主，一个任务栏图标
+
+`statics/icon.ico` 是**入库的**（`pyproject.toml` 的 `package-data` 里列了 `statics/*.ico`），
+因为 wheel 不能依赖 node 去生成它。三个宿主各自的图标来源：
+
+| 宿主 | 图标从哪来 |
+|---|---|
+| Tauri 桌面端 | `bundle.icon`（`npx tauri icon` 生成的各平台资源） |
+| pywebview 窗口 | `webview.start(icon=statics/icon.ico)` |
+| 冻结的 sidecar | PyInstaller `--icon statics/icon.ico` |
+
+**pywebview 这条必须显式给**：WinForms 后端读的是 `_state['icon']`，只有
+`webview.start(icon=...)` 会填；否则退到 `ExtractIconW(sys.executable)`，而源码跑时
+宿主是 `python.exe`——实测任务栏显示的就是 Python logo。同一窗口由冻结 sidecar 托管时
+显示 PyInstaller 默认图标，桌面端显示真图标：一个应用三个脸。
+
+另外还要 `SetCurrentProcessExplicitAppUserModelID("dev.chrono.handoff")`（`window.py`
+的 `_claim_taskbar_identity()`，必须在建窗之前调）：宿主是共享解释器时，Windows 会把
+这个窗口和**其它所有 Python 窗口**并成一组，共用一个按钮和一个图标——换了图标也会被
+邻居的盖住。这个值是桌面端的 bundle identifier，两个宿主因此在任务栏里是同一个产品。
+
+`scripts/e2e_window.py` 盯着这件事：读窗口的 `WM_GETICON` 图标、与 `icon.ico` 的位图
+**逐像素**比较（比句柄没用——同一个图像每次请求都是新句柄）。去掉 `icon=` 这条断言
+就失败，实测。
 
 设计取自面板自己的导轨：一格格拍位、GO 钉在正中、且只有它允许发亮。高度和亮度差
 不是装饰——past（左侧：已过，实心偏暗）/ GO（居中：实色琥珀，最高）/ tail（右侧：

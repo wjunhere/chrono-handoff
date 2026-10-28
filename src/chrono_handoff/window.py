@@ -36,9 +36,37 @@ from . import winshell
 from .conductor import Conductor
 from .remote import RemoteConductor
 from .settings import MIN_LOGIC_H, MIN_LOGIC_W, Settings
-from .webui import CuePanel
+from .webui import ICON_ICO_PATH, CuePanel
 
 DEFAULT_TITLE = "chrono-handoff"
+
+#: Taskbar identity for the native window.  The same value the desktop shell's
+#: bundle carries (``tauri.conf.json`` -> ``identifier``), so both hosts are one
+#: product in the taskbar rather than "this app" and "a python script".
+APP_USER_MODEL_ID = "dev.chrono.handoff"
+
+
+def _claim_taskbar_identity() -> bool:
+    """Give this process its own taskbar group, before any window is created.
+
+    Hosted by a shared interpreter, the window would otherwise group with every
+    other ``python.exe`` window: one taskbar button, one icon, shared between
+    unrelated programs.  Windows reads this per *process*, so it must be called
+    before the first window exists -- hence here rather than in ``_boot``.
+
+    A failure is not fatal: the window still works, it just shares a group.
+    """
+    if sys.platform != "win32":
+        return False
+    try:
+        import ctypes
+
+        return bool(
+            ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID(APP_USER_MODEL_ID)
+            == 0
+        )
+    except Exception:
+        return False
 
 
 def _set_on_top(window: Any, value: bool) -> bool:
@@ -674,6 +702,13 @@ class CueWindow:
         except Exception as exc:
             return self._run_browser_fallback(f"{type(exc).__name__}: {exc}")
 
+        # Taskbar identity, before any window exists.  Hosted by `python.exe`,
+        # this window groups with every other Python window (shared button, shared
+        # icon), so the app looked like a script even once it had its own icon.
+        # The identifier is the shell's bundle id: same product, one taskbar
+        # identity, whichever host is running.
+        _claim_taskbar_identity()
+
         s = self.panel.settings
         self.conductor.start()
         if s.x is not None and s.y is not None:
@@ -787,7 +822,17 @@ class CueWindow:
                     except Exception:
                         pass
 
-            webview.start(_boot, debug=self.debug)
+            # The icon is passed to `start`, not to `create_window`: pywebview's
+            # WinForms backend reads it from `_state['icon']`, which only
+            # `start(icon=...)` fills, and otherwise takes
+            # `ExtractIconW(sys.executable)` -- the Python logo.  Measured on the
+            # real window: the taskbar showed the interpreter's icon, so the
+            # widget looked like a script next to the desktop app's own mark.
+            webview.start(
+                _boot,
+                icon=str(ICON_ICO_PATH) if ICON_ICO_PATH.is_file() else None,
+                debug=self.debug,
+            )
             return 0
         finally:
             try:

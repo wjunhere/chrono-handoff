@@ -87,6 +87,10 @@ def build(name: str, exe: str) -> int:
         "--workpath", str(BUILD_DIR / "work"),
         "--specpath", str(BUILD_DIR),
         "--add-data", f"{STATICS}{';' if sys.platform == 'win32' else ':'}chrono_handoff/statics",
+        # The sidecar hosts the cue window in split mode, so its own icon is what
+        # that window's taskbar button shows.  Without this PyInstaller's default
+        # mark is the face of the app while the desktop shell shows the real one.
+        "--icon", str(STATICS / "icon.ico"),
         "--hidden-import", "sounddevice",
         "--collect-submodules", "serial",
         "--hidden-import", "serial.tools.list_ports",

@@ -314,7 +314,7 @@ Windows 11 / CPython 3.13，详见 [`docs/implementation-notes.md`](implementati
 | [`docs/m1.md`](docs/m1.md) | M1 测量实验方法 |
 | [`docs/theory.md`](docs/theory.md) | 理论依据（时间触发 / 人机节拍同步） |
 | [`docs/problem.md`](docs/problem.md) | 问题定义与量化 |
-| [`docs/usage-findings.md`](docs/usage-findings.md) | 实测踩坑记录（十个问题，均已有结论） |
+| [`docs/usage-findings.md`](docs/usage-findings.md) | 实测踩坑记录（十一个问题，均已有结论） |
 | [`docs/related-work.md`](docs/related-work.md) | 相关项目调研 |
 | [`case-studies/loongson-2k1000.md`](case-studies/loongson-2k1000.md) | 实例：龙芯 2K1000LA PMON 引导窗口捕获 |
 

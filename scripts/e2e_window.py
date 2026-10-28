@@ -36,9 +36,91 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 os.environ.setdefault("CHRONO_HOME", str(Path(__file__).resolve().parents[1] / "logs" / "_home"))
 
 from chrono_handoff.settings import Settings  # noqa: E402
+from chrono_handoff.webui import ICON_ICO_PATH  # noqa: E402
 
 FAILURES: list[str] = []
 OUT: dict = {}
+
+
+def _window_icon_matches(ico_path: Path, title: str = "chrono-handoff") -> bool | str:
+    """Does the live window's icon bitmap equal the committed .ico's?
+
+    Compared as *pixels*, not handles: Windows hands out a fresh HICON for the
+    same image, so equal handles would prove nothing and unequal ones prove
+    nothing either.  The .ico is decoded through the shell (`LoadImage` with
+    LR_LOADFROMFILE) so the comparison is against the file we ship.
+
+    Returns a string on any inability to measure, so a skip is visibly a skip.
+    """
+    if sys.platform != "win32":
+        return "not windows"
+    try:
+        import ctypes
+        from ctypes import wintypes
+
+        user32 = ctypes.WinDLL("user32", use_last_error=True)
+        gdi32 = ctypes.WinDLL("gdi32", use_last_error=True)
+        user32.FindWindowW.argtypes = [wintypes.LPCWSTR, wintypes.LPCWSTR]
+        user32.FindWindowW.restype = wintypes.HWND
+        user32.SendMessageW.argtypes = [wintypes.HWND, wintypes.UINT, wintypes.WPARAM, wintypes.LPARAM]
+        user32.SendMessageW.restype = ctypes.c_void_p
+        user32.GetClassLongPtrW.argtypes = [wintypes.HWND, ctypes.c_int]
+        user32.GetClassLongPtrW.restype = ctypes.c_void_p
+        user32.GetDC.argtypes = [wintypes.HWND]
+        user32.GetDC.restype = wintypes.HDC
+        user32.ReleaseDC.argtypes = [wintypes.HWND, wintypes.HDC]
+        user32.DrawIconEx.argtypes = [wintypes.HDC, ctypes.c_int, ctypes.c_int, wintypes.HICON,
+                                      ctypes.c_int, ctypes.c_int, wintypes.UINT, wintypes.HBRUSH,
+                                      wintypes.UINT]
+        gdi32.CreateCompatibleDC.argtypes = [wintypes.HDC]
+        gdi32.CreateCompatibleDC.restype = wintypes.HDC
+        gdi32.CreateDIBSection.argtypes = [wintypes.HDC, ctypes.c_void_p, wintypes.UINT,
+                                          ctypes.POINTER(ctypes.c_void_p), wintypes.HANDLE,
+                                          wintypes.DWORD]
+        gdi32.CreateDIBSection.restype = wintypes.HBITMAP
+        gdi32.SelectObject.argtypes = [wintypes.HDC, wintypes.HANDLE]
+        gdi32.DeleteDC.argtypes = [wintypes.HDC]
+        user32.LoadImageW.argtypes = [wintypes.HINSTANCE, wintypes.LPCWSTR, wintypes.UINT,
+                                      ctypes.c_int, ctypes.c_int, wintypes.UINT]
+        user32.LoadImageW.restype = ctypes.c_void_p
+
+        class BMIH(ctypes.Structure):
+            _fields_ = [("biSize", wintypes.DWORD), ("biWidth", wintypes.LONG),
+                        ("biHeight", wintypes.LONG), ("biPlanes", wintypes.WORD),
+                        ("biBitCount", wintypes.WORD), ("biCompression", wintypes.DWORD),
+                        ("biSizeImage", wintypes.DWORD), ("biXPelsPerMeter", wintypes.LONG),
+                        ("biYPelsPerMeter", wintypes.LONG), ("biClrUsed", wintypes.DWORD),
+                        ("biClrImportant", wintypes.DWORD)]
+
+        def bitmap(hicon: int, size: int = 48) -> bytes | None:
+            if not hicon:
+                return None
+            hdc = user32.GetDC(None)
+            mem = gdi32.CreateCompatibleDC(hdc)
+            bi = BMIH()
+            bi.biSize = ctypes.sizeof(bi)
+            bi.biWidth, bi.biHeight = size, -size
+            bi.biPlanes, bi.biBitCount = 1, 32
+            bits = ctypes.c_void_p()
+            dib = gdi32.CreateDIBSection(hdc, ctypes.byref(bi), 0, ctypes.byref(bits), None, 0)
+            gdi32.SelectObject(mem, dib)
+            user32.DrawIconEx(mem, 0, 0, hicon, size, size, 0, None, 0x0003)   # DI_NORMAL
+            raw = ctypes.string_at(bits, size * size * 4)
+            gdi32.DeleteDC(mem)
+            user32.ReleaseDC(None, hdc)
+            return raw
+
+        hwnd = user32.FindWindowW(None, title)
+        if not hwnd:
+            return "no window"
+        live = user32.SendMessageW(hwnd, 0x007F, 1, 0) or user32.GetClassLongPtrW(hwnd, -14)
+        want = user32.LoadImageW(None, str(ico_path), 1, 48, 48, 0x10)   # IMAGE_ICON, LR_LOADFROMFILE
+        a, b = bitmap(live), bitmap(want)
+        if a is None or b is None:
+            return "no icon handle"
+        return a == b
+    except Exception as exc:
+        return f"{type(exc).__name__}: {exc}"
 
 
 def check(name: str, ok: bool, detail: str = "") -> None:
@@ -147,6 +229,14 @@ def main() -> int:
                 if e.kind in ("cue_beat", "cue_zero")
                 and e.t > next((x.t for x in evs if x.kind == "human_signal"), 1e9)
             )
+
+            # The taskbar icon.  pywebview's WinForms backend falls back to
+            # `ExtractIconW(sys.executable)` when `start()` is given no icon, so
+            # the widget used to show the Python logo while the desktop shell
+            # showed the app's own mark.  Read the window's icon handle and
+            # compare its pixels with the committed .ico -- a handle comparison
+            # would prove nothing (Windows hands out a new one per request).
+            OUT["taskbar_icon"] = _window_icon_matches(ICON_ICO_PATH)
         except Exception as exc:
             OUT["error"] = f"{type(exc).__name__}: {exc}"
         finally:
@@ -161,6 +251,9 @@ def main() -> int:
     print(json.dumps(OUT, ensure_ascii=False, indent=2, default=str))
     print()
     check("shell layout activated", "shell" in str(OUT.get("body_class", "")), f"body.class={OUT.get('body_class')!r}")
+    check("the window carries the app's own taskbar icon",
+          OUT.get("taskbar_icon") is True,
+          f"icon={OUT.get('taskbar_icon')} (source: {ICON_ICO_PATH.name})")
     check("custom title bar is visible", OUT.get("titlebar_display") == "flex", f"display={OUT.get('titlebar_display')}")
     check("settings overlay exists", OUT.get("settings_overlay") is True)
     check("JS bridge available", OUT.get("bridge_available") is True)

@@ -4,7 +4,7 @@
 > 场景：给嵌入式实验的板载 LED 拍实物照片，需要人在 6 个时刻依次按状态拍摄。
 > 平台：Windows 11 · CPython 3.14 · Git Bash · 通过 MCP（`chrono mcp`）调用。
 >
-> 本文只写**实际踩到的东西**，每条都带复现方式与根因定位。十个问题现在都已修掉，
+> 本文只写**实际踩到的东西**，每条都带复现方式与根因定位。十一个问题现在都已修掉，
 > 每节末尾的「修法」写的是最终改动，而不是当时的绕行。
 
 ---
@@ -461,3 +461,49 @@ B 被释放       +7s，时刻已过去 6s
 
 `e2e_panel` 新增 4 条：墙钟目标必须落在那一刻（±50 ms，实测 0.00 ms）、过去的目标
 被拒、epoch 塞进 `target_at` 被拒、排队期间错过的目标必须 `verdict=missed` 且 0 拍。
+
+---
+
+## 问题 11 ★ pywebview 窗口的任务栏图标是 Python logo（已修）
+
+### 现象
+
+同一个应用两个宿主，任务栏两个脸：桌面端（Tauri）是项目自己的节拍标记，
+`chrono window` / `daemon --window` 是**蓝色 Python logo**。
+
+### 根因
+
+pywebview 的 WinForms 后端：
+
+```python
+if _state['icon'] and os.path.isfile(_state['icon']):
+    self.Icon = Icon(_state['icon'])
+else:
+    icon_handle = windll.shell32.ExtractIconW(handle, sys.executable, 0)
+```
+
+`_state['icon']` 只由 `webview.start(icon=...)` 填，而 `window.py` 只传了 `_boot`，
+于是走 else：**取宿主进程的图标**。源码跑时宿主是 `python.exe`。
+
+还叠了一层：宿主是共享解释器，Windows 按 AppUserModelID 分组，这个窗口会和
+**其它所有 Python 窗口**并成一个任务栏按钮——就算换了图标也会被邻居盖住。
+
+验证方式：把窗口的 `WM_GETICON` 图标和 `python.exe` 的图标各抽成位图看——
+两张一模一样，都是 Python logo。
+
+### 修法
+
+- `statics/icon.ico` 由 `icon.svg` 用 `npx tauri icon` 生成后**入库**
+  （6 个尺寸，16→256；`pyproject.toml` 的 `package-data` 加 `statics/*.ico`，
+  否则 wheel 装完没图标而源码跑有，又是一个只在一半环境里出现的缺陷）。
+- `webview.start(icon=statics/icon.ico)`。
+- `_claim_taskbar_identity()`：建窗前调
+  `SetCurrentProcessExplicitAppUserModelID("dev.chrono.handoff")`——用桌面端的
+  bundle id，两个宿主在任务栏里是同一个产品。
+- `desktop/sidecar/build.py` 的 PyInstaller 加 `--icon`，冻结的 conductor 也不是默认脸了。
+
+### 回归
+
+`e2e_window.py` 新增一条：读窗口的 `WM_GETICON` 图标，与 `icon.ico` 的位图
+**逐像素**比较（比句柄没用——同一个图像每次请求都是新句柄）。把 `icon=` 去掉后
+这条失败（实测 `icon=False`），加上后通过。

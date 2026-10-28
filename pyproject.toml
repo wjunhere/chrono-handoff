@@ -42,6 +42,10 @@ where = ["src"]
 chrono_handoff = [
     "statics/*.html",
     "statics/*.svg",
+    # Windows wants a real .ico for the taskbar (see `window.py`); generated from
+    # `statics/icon.svg` by `npx tauri icon` and committed, because a wheel must
+    # not depend on node.
+    "statics/*.ico",
     "statics/*.wav",
     "statics/fonts/*.woff2",
 ]
