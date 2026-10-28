@@ -117,6 +117,31 @@ class CuePanel:
         # When a run is armed, remember it as current and notify any long-poll
         # listener so the page can pull the schedule immediately.
         conductor.on_armed(self._on_armed)
+        # A cue that is *held back* is never armed, so `on_armed` cannot announce
+        # it.  Without this the operator following cue A is told nothing about
+        # cue B waiting behind it, walks away when A ends, and misses B's
+        # countdown -- which starts by itself a second later.
+        subscribe = getattr(conductor, "subscribe", None)
+        if subscribe is not None:
+            subscribe(self._on_event)
+
+    def _on_event(self, run: Any, event: Any) -> None:
+        """Re-announce the current cue when the queue changes.
+
+        Only ``queued``/``queue_released`` need this: the page re-reads
+        ``queued`` from the reply and repaints the "N more coming" line.  Every
+        other event is already handled by the page's own event poll.
+        """
+        if getattr(event, "kind", "") not in ("queued", "queue_released"):
+            return
+        rid = self.current_run()
+        if not rid:
+            return
+        for fn in list(self._subscribers):
+            try:
+                fn(rid)
+            except Exception:
+                pass
 
     # -- lifecycle ---------------------------------------------------------
 
@@ -299,7 +324,7 @@ class CuePanel:
                         else:
                             self._json(panel.conductor.schedule_payload(run_id))
                     elif path == "/api/events":
-                        self._json(panel.events(int(qs.get("since", "0") or 0)))
+                        self._json(panel.events(int(qs.get("since", "0") or 0), qs.get("run_id")))
                     elif path == "/api/settings":
                         self._json({"settings": panel.settings.to_dict(), "path": str(panel.settings_file())})
                     elif path == "/api/calibration":
@@ -327,7 +352,17 @@ class CuePanel:
                         # Long-poll: lets the page react the instant a cue is
                         # armed without hammering the server, and keeps the
                         # panel responsive when opened *before* it is needed.
-                        self._json(panel.wait_for_armed(float(qs.get("timeout", "20") or 20)))
+                        #
+                        # `since` MUST be forwarded.  The page sends it on every
+                        # poll (`?timeout=25&since=<generation>`), and dropping it
+                        # made the endpoint answer "already" on every call -- the
+                        # long-poll returned at once, the page re-fetched the same
+                        # schedule in a 400 ms loop, and the queue count could never
+                        # change because the reply never waited for one.
+                        self._json(panel.wait_for_armed(
+                            float(qs.get("timeout", "20") or 20),
+                            float(qs.get("since", "0") or 0),
+                        ))
                     elif path == "/api/update-ready":
                         # Asked by the update path before it stops anything: an
                         # updater that restarts the window mid-cue leaves somebody
@@ -422,7 +457,20 @@ class CuePanel:
     # -- state -------------------------------------------------------------
 
     def _on_armed(self, run: Any) -> None:
+        """A cue's grid was resolved: it may now be the cue on screen.
+
+        Not unconditionally.  Overwriting `_current_run` here is exactly what
+        made a second cue erase the first: the operator was mid-countdown on cue
+        A, cue B was armed, and the grid changed under them.  With
+        ``Conductor.cue(queue=True)`` (the default) B is not armed until A's grid
+        has finished, so this only has to cover the deliberate
+        ``queue=False`` case, where two grids really do run at once -- and even
+        then the screen stays with the cue the operator is already following.
+        """
         with self._lock:
+            current = self._current_run
+            if current and current != run.id and self._is_live(current):
+                return      # keep the cue the human is already following
             self._current_run = run.id
             self._generation = time.time()
         for fn in list(self._subscribers):
@@ -431,9 +479,92 @@ class CuePanel:
             except Exception:
                 pass
 
-    def current_run(self) -> str | None:
+    def _is_live(self, run_id: str) -> bool:
+        """Is this run still holding the panel?
+
+        A run that has finished no longer owns the screen, so the next cue must
+        take it over immediately -- otherwise the panel stays on a spent grid
+        until somebody asks it to move on.
+
+        Judged on the *status*, not on the tail: the page keeps a finished cue's
+        last grid up while its tail is still sounding (`goIdle` waits for the
+        final beat), and that is the page's decision, not a claim on the queue.
+        """
+        try:
+            run = self.conductor.get(run_id)
+        except Exception:
+            return False
+        if run is None:
+            return False
+        try:
+            status = run.status.value if hasattr(run.status, "value") else str(run.status)
+        except Exception:
+            return False
+        return status not in ("satisfied", "timeout", "aborted", "error", "partial")
+
+    def queued_runs(self) -> list[str]:
+        """Runs the conductor is holding back, in the order they will play.
+
+        Asked of the conductor rather than tracked here, because the conductor is
+        the one that decides -- a panel-side copy of "who is next" is a second
+        source of truth, and the two would drift the moment a cue is cancelled.
+
+        A queued run is PENDING with ``queued_behind`` set, and it has no grid, so
+        it must never be published as a schedule; the page only needs to know one
+        is coming.
+        """
+        try:
+            runs = self.conductor.list_runs()
+        except Exception:
+            runs = []
+        return [
+            r["run_id"] for r in runs
+            if r.get("queued_behind") and r.get("status") == "pending"
+        ]
+
+    def _pick_current(self) -> str | None:
+        """Decide what the panel should be showing.
+
+        Three cases, in order:
+
+        1. the remembered run is still live -> keep it (this is the common case,
+           and it is what stops the screen from changing under the operator);
+        2. something newer is live -> show that (a panel opened *after* a cue was
+           armed, or a second cue the conductor started once the first ended);
+        3. nothing is live -> keep the remembered run, so a finished cue's last
+           grid stays on screen for the few seconds its tail is still sounding.
+           The page clears it itself (`goIdle`).
+
+        A run that is PENDING because the conductor is holding it back is not
+        live and must not be shown: it has no grid, so there is nothing to render.
+        """
         with self._lock:
-            rid = self._current_run
+            current = self._current_run
+        if current and self._is_live(current):
+            return current
+        newest_live = None
+        try:
+            for run in reversed(self.conductor.list_runs()):
+                if self._is_live(run["run_id"]):
+                    newest_live = run["run_id"]
+                    break
+        except Exception:
+            newest_live = None
+        if newest_live and newest_live != current:
+            with self._lock:
+                self._current_run = newest_live
+                self._generation = time.time()
+            return newest_live
+        return current
+
+    def current_run(self) -> str | None:
+        """The run the panel should be showing right now.
+
+        Every endpoint that answers "what is on screen" goes through here --
+        health, schedule, events, press -- so a panel whose page is closed still
+        has a correct answer for the next page that opens.
+        """
+        rid = self._pick_current()
         if not rid:
             return None
         # With a local conductor we can verify the run still exists; with a
@@ -457,7 +588,20 @@ class CuePanel:
         if current_gen > since_generation:
             run_id = self.current_run()
             if run_id:
-                return {"run_id": run_id, "generation": current_gen, "already": True}
+                return {"run_id": run_id, "generation": current_gen, "already": True,
+                        "queued": self.queued_runs()}
+        # Nothing new since the page's generation.  A run may nevertheless have
+        # become current without an arm event -- the previous cue finished and the
+        # conductor started the one it was holding back -- so ask again and
+        # compare generations rather than assuming the page is up to date.
+        self._pick_current()
+        with self._lock:
+            current_gen = self._generation
+        if current_gen > since_generation:
+            run_id = self.current_run()
+            if run_id:
+                return {"run_id": run_id, "generation": current_gen, "already": True,
+                        "queued": self.queued_runs()}
         event = threading.Event()
         box: list[str] = []
 
@@ -465,16 +609,28 @@ class CuePanel:
             box.append(rid)
             event.set()
 
+        # A queued cue is never *armed* while it waits, so the arm notification is
+        # not what the page needs to hear about.  While anything is queued, answer
+        # on a short cadence instead of holding the poll for the full 25 s: the
+        # page repaints "N more coming" from every reply, and without this the
+        # count would only appear once the poll timed out -- i.e. exactly when the
+        # operator has already walked away from the first cue.
+        wait_s = max(0.5, min(timeout_s, 60.0))
+        if self.queued_runs():
+            wait_s = min(wait_s, 1.0)
+
         self._subscribers.append(notify)
         try:
-            event.wait(max(0.5, min(timeout_s, 60.0)))
+            event.wait(wait_s)
         finally:
             try:
                 self._subscribers.remove(notify)
             except ValueError:
                 pass
-        return {"run_id": box[0] if box else None, "timed_out": not box}
-
+        # Whatever woke us -- a new arm, or the queue changing -- the page needs
+        # the run that is on screen plus how many are waiting behind it.
+        return {"run_id": box[0] if box else None, "timed_out": not box,
+                "queued": self.queued_runs()}
     # -- settings ----------------------------------------------------------
 
     def settings_file(self) -> Path:
@@ -531,22 +687,30 @@ class CuePanel:
             "version": __version__,
             "contract": CONTRACT_VERSION,
             "current_run": self.current_run(),
+            "queued": self.queued_runs(),
             "stats": self.conductor.stats(),
             "degraded": self.degraded_reason,
             "writable": not self.settings.readonly_reason,
             "why_not_writable": self.settings.readonly_reason,
         }
 
-    def events(self, since_seq: int = 0) -> dict[str, Any]:
-        run_id = self.current_run()
-        if not run_id:
+    def events(self, since_seq: int = 0, run_id: str | None = None) -> dict[str, Any]:
+        """Journal tail for the cue on screen -- or for an explicitly named run.
+
+        The page only ever wants the current one, but naming a run is what lets a
+        test or a tool ask "what happened to *that* cue".  Without it the endpoint
+        silently answered about whichever run happened to be current, so a client
+        asking about run B got run A's events and no indication of the swap.
+        """
+        rid = run_id or self.current_run()
+        if not rid:
             return {"run_id": None, "events": []}
         from dataclasses import asdict
 
         return {
-            "run_id": run_id,
-            "events": [asdict(e) for e in self.conductor.events(run_id, since_seq)],
-            "snapshot": self.conductor.status(run_id),
+            "run_id": rid,
+            "events": [asdict(e) for e in self.conductor.events(rid, since_seq)],
+            "snapshot": self.conductor.status(rid),
         }
 
     # -- actions -----------------------------------------------------------
@@ -700,7 +864,7 @@ def _dev_main() -> int:
 
         plan = plan_from_dict(
             {
-                "instruction": "Press the big button on the GO beat",
+                "instruction": "在重拍那一刻按一下开发板上的 RESET 键",
                 "lead_s": 3.0,
                 "ioi_ms": 500,
                 "tail_beats": 4,

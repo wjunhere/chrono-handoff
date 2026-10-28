@@ -843,13 +843,20 @@ def cmd_observe(args: argparse.Namespace) -> int:
 
 def cmd_status(args: argparse.Namespace) -> int:
     if args.run_id:
-        _print_json(_client(args).call("status", run_id=args.run_id, include_events=args.include_events))
+        snap = _client(args).call("status", run_id=args.run_id, include_events=args.include_events)
+        # Lead with the verdict, not the state name.  `status: timeout` on a cue
+        # that asked nobody for anything is the successful end of that cue, and
+        # reading it as a failure is the mistake this line exists to prevent.
+        verdict = snap.get("verdict") or "-"
+        print(f"verdict: {verdict}  ({snap.get('verdict_reason') or '-'})  status: {snap.get('status')}")
+        _print_json(snap)
     else:
         res = _client(args).call("list")
         for r in res["runs"]:
             off = r.get("human_offset_ms")
             off_s = f"{off:+8.1f}ms" if off is not None else "      n/a"
-            print(f"  {r['run_id']:<28} {r['status']:<10} {off_s}  {r['instruction'][:40]}")
+            verdict = r.get("verdict") or ("queued" if r.get("queued_behind") else "-")
+            print(f"  {r['run_id']:<28} {r['status']:<10} {verdict:<16} {off_s}  {r['instruction'][:40]}")
         _print_json({"stats": res["stats"]})
     return 0
 
@@ -1006,7 +1013,7 @@ def cmd_demo(args: argparse.Namespace) -> int:
     print(f"target    : t+{args.in_s:.1f}s  lead={args.lead:.1f}s  ioi={args.ioi:.0f}ms  tail={args.tail_beats}")
     if args.paused:
         print("paused    : press Start in the panel to begin the countdown")
-    print("follow the pulse, press the panel button on the accented GO beat; Ctrl-C to stop")
+    print("follow the pulse; do the action above on the accented GO beat; Ctrl-C to stop")
     try:
         panel.serve_forever(open_browser=False)
     except KeyboardInterrupt:
@@ -1174,14 +1181,25 @@ def build_parser() -> argparse.ArgumentParser:
     cb.set_defaults(fn=cmd_calibrate)
 
     dm2 = sub.add_parser("demo", help="interactive cue panel + a hand cue")
-    dm2.add_argument("--instruction", default="Press the button on the GO beat")
+    # The demo text is what a first-time user reads, so it must not describe the
+    # panel's own button as the task: the point of the component is "do X at T",
+    # not "press GO".  Naming a concrete object keeps the physical action where
+    # it belongs while staying useful on any bench.
+    dm2.add_argument("--instruction", default="在重拍那一刻按一下开发板上的 RESET 键")
     dm2.add_argument("--in", dest="in_s", type=float, default=6.0,
                      help="seconds until the physical action should land")
     dm2.add_argument("--lead", type=float, default=3.0, help="countdown seconds before GO")
     dm2.add_argument("--ioi", type=float, default=500.0, help="beat interval ms")
     dm2.add_argument("--tail-beats", type=int, default=6, help="beats after GO (keeps the pulse)")
     dm2.add_argument("--timeout", type=float, default=30.0)
-    dm2.add_argument("--source", default="http", help="how the press is observed")
+    # `http` on purpose: the demo runs with no hardware attached, so the panel is
+    # the only observation surface that can work out of the box.  It is *a* valid
+    # use of the component (and the one the probe/calibration paths measure), not
+    # the shape of the product -- `expect_source` defaults to the sensor in real
+    # plans, and the panel hides its button entirely when a sensor owns the
+    # evidence.
+    dm2.add_argument("--source", default="http",
+                     help="how the action is observed: http (the panel itself) | console_key | serial | none")
     dm2.add_argument("--paused", action="store_true", help="arm, then wait for the panel's Start")
     dm2.add_argument("--host", default=DEFAULT_HOST)
     dm2.add_argument("--panel-port", type=int, default=8790)

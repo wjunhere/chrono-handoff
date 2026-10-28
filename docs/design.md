@@ -132,6 +132,8 @@ sync_action({
 ```jsonc
 {
   "status": "satisfied",           // satisfied | timeout | aborted | partial
+  "verdict": "ok",                 // 结论：ok | signal_missing | unverified | cancelled | error
+  "verdict_reason": "verify",      // 内部原因（human_signal / no_signal / panel_cancel …）
   "t0": 1234567.890,               // 单调时钟基准
   "events": [
     { "t": 0.000,  "kind": "timeline_submitted" },
@@ -209,6 +211,26 @@ sync_cancel({ "id": "sync_001" })
 
 正确做法：**从 cue 开始播放的那一刻起就持续监听信号**，无论信号何时到来都能接住。
 
+### 5.1.1 `status` 与 `verdict`：状态名不是结论
+
+`status` 是上面这台状态机的终态，它必须稳定（改名等于改契约）。但它的字面意思
+会误导人：一个 `expect_signal.source == "none"` 的 cue 本来就不要求人做任何可观测的
+动作，`duration_s` 到点后它必然记成 `TIMEOUT`——而那是这条 cue 的**成功**终态。
+
+所以快照里另有一个 `verdict`：
+
+| `status` | `verdict` | 含义 |
+|---|---|---|
+| `SATISFIED` | `ok` | 观测到人的动作（或 verify 通过） |
+| `TIMEOUT` + 这条 run 等信号 | `signal_missing` | 人没做，或没被观测到——失败 |
+| `TIMEOUT` + 这条 run 不等信号 | `ok` | 提示期正常结束——成功 |
+| `PARTIAL` | `unverified` | 收到信号但未确认生效 |
+| `ABORTED` | `cancelled` | 被取消 |
+| `ERROR` | `error` | 内部故障 |
+
+`verdict_reason` 给出内部原因（`human_signal` / `no_signal` / `panel_cancel`…）。
+调用方分支判断请用 `verdict`。
+
 ### 5.2 re-arm（重装填）
 
 ```
@@ -216,6 +238,27 @@ sync_cancel({ "id": "sync_001" })
 ```
 
 要有**最大重试次数**（避免无限循环），以及**指数退避**（如果是设备还没准备好）。
+
+### 5.3 多条 cue：串行而不是叠加
+
+人只有一双眼睛，两条同时跑的 cue 不是两个提示——第二个会把第一个从屏幕上顶掉，
+而第一个人还在跟着一个已经变了的节拍数拍子。所以后到的 cue 默认**排队**：
+
+```
+cue A 提交        → RUNNING，占屏幕
+cue B 提交        → PENDING，queued_behind = A
+A 的刺激播完      → B 自动 go()，接屏
+```
+
+三个细节：
+
+- 释放时机是**刺激结束**（最后一个 tail 拍），不是 verdict。verdict 早于 tail 好几秒，
+  那时开始下一条会把两串拍子叠在一起。
+- 链条而非扇入：C 排在 B 后面，而不是也排到 A 后面（否则 A 结束时只释放一个，另一个永远
+  PENDING）。
+- 只对 `audio or visual` 的 plan 生效：机器侧独占的动作不会互相遮挡，不该被排队拖慢。
+
+`queue=false` 保留真正需要并行的场景（一人一条 cue）。面板上的「立即开始」按钮同样受此约束。
 
 ## 6. 降级策略：窗口太窄时
 
@@ -263,7 +306,8 @@ else:
 | Agent 忘了自己在等什么 | 事件日志持久化 + 超时兜底 |
 | 人类做了但 agent 没看见 | 传感器回读 + re-arm（不能只依赖"人类说完成了"） |
 | 重复执行导致副作用 | 动作**幂等化**设计；带序号的状态推进 |
-| 提示被忽略（用户离开） | 超时后明确返回 `timeout`，而不是静默挂住 |
+| 提示被忽略（用户离开） | 超时后明确结束，而不是静默挂住；`verdict` 说明这次到底算不算成功 |
+| 两条 cue 同时上屏 | `queue` 默认串行化，后一条等前一条的拍子播完 |
 
 ## 9. 与现有实现的关系
 

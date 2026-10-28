@@ -168,6 +168,23 @@ class Run:
     cue_audited: bool = False
     ended_at: float | None = None
     notes: list[str] = field(default_factory=list)
+    #: Plain-language reading of the terminal status, filled by ``_finalize``.
+    #:
+    #: ``status`` is a state machine and has to stay stable; ``verdict`` is what
+    #: it *means for the human reading it*.  They are not the same word: a cue
+    #: that asked nobody for anything and simply ran out its ``duration_s`` ends
+    #: ``timeout`` -- which in English reads as a failure and was duly mistaken
+    #: for one, even though the whole cue had gone exactly to plan.
+    verdict: str = ""
+    #: Why the run ended, straight from ``_finalize`` (``human_signal``,
+    #: ``no_signal``, ``panel_cancel``...).  Kept because ``verdict`` is coarse
+    #: and the reason is the part a caller acts on.
+    verdict_reason: str = ""
+    #: Set for a queued run: it is waiting for the run ahead of it to reach a
+    #: terminal state before its clock may start.  A queued run is ``PENDING``
+    #: and must not be handed a schedule -- two live grids would be two cues
+    #: competing for the same pair of eyes and the same beat count.
+    queued_behind: str | None = None
     _seq: int = 0
 
     # runtime handles (not serialised)
@@ -199,6 +216,11 @@ class Run:
         d: dict[str, Any] = {
             "run_id": self.id,
             "status": self.status.value,
+            # Read `verdict` before `status` when you want to know whether this
+            # went to plan.  `status: "timeout"` on a cue that never asked for
+            # a signal is the *successful* path.
+            "verdict": self.verdict,
+            "verdict_reason": self.verdict_reason,
             "instruction": self.plan.instruction,
             "origin_mono": self.origin,
             "zero_at_mono": self.zero_at,
@@ -209,6 +231,7 @@ class Run:
             "human_offset_ms": None if self.human_offset_ms is None else round(self.human_offset_ms, 1),
             "actions_fired": self.actions_fired,
             "beats_total": len(self.beats),
+            "queued_behind": self.queued_behind,
             "notes": self.notes,
             "meta": self.plan.meta,
             # Which source owns the evidence.  CuePanel.press needs it to decide
@@ -302,6 +325,11 @@ class Conductor:
         if self._poller is not None:
             self._poller.join(timeout=1.0)
         if terminate_runs:
+            # Detach the queue *first*.  `_finalize` releases a queued successor
+            # so that a normal end hands over cleanly; during shutdown that would
+            # arm a fresh grid in a process that is already leaving.
+            for run in list(self.runs.values()):
+                run.queued_behind = None
             for run in list(self.runs.values()):
                 if run.status not in TERMINAL:
                     self._finalize(run, RunStatus.ABORTED, reason="conductor_shutdown")
@@ -387,7 +415,7 @@ class Conductor:
 
     # -- submit ------------------------------------------------------------
 
-    def submit(self, plan: CuePlan, paused: bool = False) -> Run:
+    def submit(self, plan: CuePlan, paused: bool = False, queue: bool = True) -> Run:
         """Register a plan.  Returns immediately; nothing here blocks.
 
         ``paused=True`` leaves the run in ``PENDING`` with no clock running, so
@@ -395,6 +423,14 @@ class Conductor:
         :meth:`go` to start it.  This matters experimentally: a subject who
         starts the countdown by themselves is not the same measurement as one
         who is told when to expect it.
+
+        ``queue=True`` (the default) does not start this run while another grid
+        is still sounding: it is registered as ``PENDING`` with ``queued_behind``
+        set, and the conductor starts it once that run's stimulus has finished.
+        Without this, two cues submitted back to back both went live, and the
+        second silently overwrote the first on the panel -- the human saw one grid
+        while two clocks were running.  ``queue=False`` is the caller's explicit
+        "run alongside".
         """
         if self._standing_down:
             raise RuntimeError(
@@ -451,18 +487,94 @@ class Conductor:
             version=__version__,
         )
         if not paused:
-            self.go(run.id)
+            # Only a plan that puts a grid in front of a person can be talked
+            # over, so only such a plan queues.  A machine-only plan (no audio,
+            # no visual) never blocks a cue and is never blocked by one -- which
+            # is what makes `queue=True` safe as a default on the declarative
+            # path too.
+            human_facing = bool(plan.audio or plan.visual)
+            # `queue` travels in meta as well as in the argument, so the decision
+            # survives the paths that only carry a plan: `submit(paused=True)`
+            # followed by `go()`, the panel's prepare/start pair, and the IPC
+            # `submit` method.  A caller that says "run alongside" must not be
+            # second-guessed by the start button it presses a moment later.
+            plan.meta.setdefault("queue", bool(queue))
+            behind = self._tail_run_id(exclude=run.id) if (queue and human_facing) else None
+            if behind is not None:
+                run.queued_behind = behind
+                self._emit(run, "queued", behind=behind, reason="another cue is still running")
+            else:
+                self.go(run.id)
         return run
+
+    def _tail_run_id(self, exclude: str = "") -> str | None:
+        """The last human-facing run that is still worth waiting for.
+
+        Deliberately NOT "a run in RUNNING state": a run reaches a terminal
+        verdict the moment the human answers, while its tail keeps pulsing for
+        seconds afterwards.  Queuing on the *status* therefore let a second grid
+        start while the first one's tail was still sounding -- two beat trains at
+        once, which is the thing this queue exists to prevent.  The end of the
+        stimulus is what matters, so that is what is checked.
+
+        ``exclude`` is the run being submitted or started: it is already in
+        ``self.runs`` and would otherwise answer "yes, wait for yourself".  Only
+        runs submitted **before** it are considered -- a cue that arrived later is
+        a successor, not something to wait for, and treating it as one deadlocked
+        a three-cue chain: B released from A looked forward, found C waiting, and
+        queued behind its own successor.
+
+        A run that is *already queued* still counts as a predecessor.  Skipping
+        those turned a chain into a fan-in: with A running and B queued behind A,
+        a third cue C looked past B (it had ``queued_behind`` set) and queued
+        behind A as well -- and once A ended only one of the two was released,
+        leaving the other PENDING for good.
+        """
+        with self._lock:
+            order = list(self._order)
+            cutoff = order.index(exclude) if exclude in order else len(order)
+            for rid in reversed(order[:cutoff]):
+                run = self.runs.get(rid)
+                if run is None:
+                    continue
+                if not (run.plan.audio or run.plan.visual):
+                    continue
+                if run.status in TERMINAL and not self._beats_pending(run):
+                    continue
+                return run.id
+        return None
 
     def go(self, run_id: str, in_s: float = 0.0) -> Run:
         """Start the clock for a submitted (possibly paused) run.
 
         ``origin`` is taken **now** -- so the human-visible grid always starts
         from a fully settled state, never from the moment an RPC arrived.
+
+        An explicit start still obeys the queue when the plan did not opt out of
+        it.  This is the path a *human* takes -- the panel's "Start now" button,
+        ``chrono window --paused``, the ``go`` IPC method -- and it used to bypass
+        the queue entirely: pressing it on a prepared cue while another grid was
+        running started both.  The person doing the pressing is exactly the one
+        who would be confused by that.
+
+        ``queue=False`` is the caller's explicit "run alongside"; it is carried in
+        ``plan.meta`` so it survives the round trip through the plan schema (a
+        bare ``go(run_id)`` has nowhere else to put it).
         """
         run = self._get(run_id)
         if run.status not in (RunStatus.PENDING,):
             return run
+        if run.queued_behind is not None:
+            # Asked to start while still queued: the answer is "not yet", and
+            # saying so is the whole point -- starting it here would put two
+            # grids in front of one person.
+            return run
+        if (run.plan.audio or run.plan.visual) and run.plan.meta.get("queue", True):
+            behind = self._tail_run_id(exclude=run.id)
+            if behind is not None:
+                run.queued_behind = behind
+                self._emit(run, "queued", behind=behind, reason="start pressed while another cue is running")
+                return run
 
         def _start(_deadline: float) -> None:
             self._arm_run(run)
@@ -853,6 +965,7 @@ class Conductor:
         expect_source: str | None = None,
         paused: bool = False,
         open_panel: bool = True,
+        queue: bool = True,
         run_id: str = "",
         **extra: Any,
     ) -> dict[str, Any]:
@@ -862,6 +975,13 @@ class Conductor:
         notified through :meth:`on_armed` the moment the grid is resolved, so
         the display is authoritative and the agent does not have to relay
         anything.
+
+        ``queue=True`` (the default) means "do not talk over the cue the human
+        is already following": if a grid is still running, this one is armed
+        behind it and starts by itself when that grid ends.  A person can only
+        follow one countdown, so two live cues are not two cues -- the second
+        silently replaces the first on screen.  Pass ``queue=False`` for the
+        genuinely simultaneous case (e.g. one cue per person).
         """
         if not instruction:
             raise ValueError("instruction is required")
@@ -888,17 +1008,23 @@ class Conductor:
             meta={"target": "cue", "effector": "human", "calibrate": True,
                   "panel": bool(open_panel), **extra},
         )
-        run = self.submit(plan, paused=paused)
+        run = self.submit(plan, paused=paused, queue=queue)
         if open_panel and self._panel_opener is not None:
             try:
                 self._panel_opener(run.id)
             except Exception:
                 pass
+        hint = (
+            f"queued behind {run.queued_behind}; it starts when that cue ends"
+            if run.queued_behind
+            else "the cue runs without you; poll chrono_observe or read the journal"
+        )
         return {
             "run_id": run.id,
             "status": run.status.value,
+            "queued_behind": run.queued_behind,
             "instruction": instruction,
-            "hint": "the cue runs without you; poll chrono_observe or read the journal",
+            "hint": hint,
         }
 
     def on_panel_open(self, fn: Callable[[str], None]) -> None:
@@ -946,6 +1072,10 @@ class Conductor:
                 "run_id": run.id,
                 "status": run.status.value,
                 "instruction": run.plan.instruction,
+                # A queued run is a commitment too: stopping now would drop a
+                # cue the agent has already promised to deliver, so it blocks an
+                # update exactly like a running one does.
+                "queued_behind": run.queued_behind,
                 "ends_in_s": ends_in,
             })
         # A submitted-but-not-yet-started run has no end time at all, and
@@ -1191,6 +1321,7 @@ class Conductor:
             return
         run.status = status
         run.ended_at = CLOCK()
+        run.verdict, run.verdict_reason = self._verdict_for(run, status, detail.get("reason", ""))
 
         # Rule 4: only closed-loop samples train the estimator.
         closed_loop = status == RunStatus.SATISFIED or (
@@ -1223,11 +1354,81 @@ class Conductor:
         if run.plan.cancel_cue_on_signal or run.beat_job is None or not self._beats_pending(run):
             self._emit_cue_audit(run, reason="run_end")
 
-        self._emit(run, "run_end", status=status.value, human_offset_ms=run.human_offset_ms, **detail)
+        self._emit(run, "run_end", status=status.value, verdict=run.verdict,
+                   verdict_reason=run.verdict_reason, human_offset_ms=run.human_offset_ms, **detail)
         if isinstance(self.visual, VisualCue):
-            self.visual.done(f"[{status.value}] offset={self._fmt_offset(run.human_offset_ms)}")
+            self.visual.done(f"[{run.verdict or status.value}] offset={self._fmt_offset(run.human_offset_ms)}")
         self._close_run_io(run)
         run.done.set()
+        # A queued run's clock may only start once the one ahead of it is over.
+        # Released *after* this run is fully closed, so the two grids can never
+        # overlap by a beat.
+        self._release_queue(run)
+
+    @staticmethod
+    def _verdict_for(run: Run, status: RunStatus, reason: str) -> tuple[str, str]:
+        """Turn (status, why) into a sentence a caller cannot misread.
+
+        ``status`` has to stay a stable state machine, so the meaning lives in a
+        second field.  The case that forced this: a cue with ``expect_source
+        == "none"`` asks the human for nothing the machine can observe, so when
+        ``duration_s`` runs out it ends ``timeout`` -- which is the *successful*
+        end of that cue, and was read as a failure by the first person who tried
+        it.  ``verdict: "ok"`` says what happened; ``timeout`` only says which
+        transition fired.
+        """
+        if status == RunStatus.SATISFIED:
+            return "ok", reason or "signal_observed"
+        if status == RunStatus.ABORTED:
+            return "cancelled", reason or "cancelled"
+        if status == RunStatus.ERROR:
+            return "error", reason or "error"
+        if status == RunStatus.PARTIAL:
+            return "unverified", reason or "signal_seen_no_verify"
+        # TIMEOUT, or anything still non-terminal that a caller is asking about.
+        expects_signal = run.plan.expect is not None and run.plan.expect.source not in ("", "none")
+        if expects_signal:
+            return "signal_missing", reason or "no_signal"
+        # Nothing was ever expected from the human: the cue delivered its grid
+        # and stopped.  That is the whole job.  The internal reason is left out
+        # of the verdict on purpose -- it says ``no_signal``, which is precisely
+        # the wording that made a correct run read as a failure.
+        return "ok", "cue_finished"
+
+    def _release_queue(self, finished: Run) -> None:
+        """Start the run that was waiting behind ``finished``, if any.
+
+        Only one level is released per finish; the released run inherits the
+        queue itself, so a chain of three cues plays in submission order without
+        any of them being armed while another is still pulsing.
+
+        The release waits for the *stimulus* to end, not for the verdict: with a
+        tail, a run reaches its terminal status seconds before its last beat, and
+        starting the next grid then would put two beat trains in the air at once.
+        """
+        with self._lock:
+            nxt = next(
+                (r for r in self.runs.values() if r.queued_behind == finished.id),
+                None,
+            )
+        if nxt is None:
+            return
+        if self._beats_pending(finished):
+            # The hand-over is re-armed for the moment the last beat lands.  A
+            # dedicated job rather than a poll: the tail's length is known
+            # exactly, and a spin loop here would be one more thing to get wrong.
+            job = finished.beat_job
+            remaining = getattr(job, "remaining", 0) if job is not None else 0
+            every = max(0.02, finished.plan.ioi_ms / 1000.0)
+            self.scheduler.after(
+                remaining * every + 0.02,
+                lambda _d: self._release_queue(finished),
+                name=f"{finished.id}:release",
+            )
+            return
+        nxt.queued_behind = None
+        self._emit(nxt, "queue_released", behind=finished.id, status=finished.status.value)
+        self.go(nxt.id)
 
     def _beats_pending(self, run: Run) -> bool:
         """Is the cue grid still going to fire again?"""

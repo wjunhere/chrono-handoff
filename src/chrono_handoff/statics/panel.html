@@ -37,15 +37,25 @@
        chrono-handoff cue panel
 
        An instrument, not a web page.  It exists so one person at a bench
-       knows, without reading, the exact instant to press something.  That
-       single job drives every decision below:
+       knows, without reading, WHAT to do and the exact instant to do it.
+       That single job drives every decision below:
 
-         * the countdown is the largest thing on the surface and nothing
-           competes with it
+         * the INSTRUCTION is the content: it gets the largest type and the
+           author's line breaks are preserved, because "what to do" is the
+           thing being delivered
+         * the countdown is the *clock attached to that sentence*, not the
+           point of it -- it is large because it is read from across a bench,
+           but it never displaces the sentence
          * the beat rail is the only colour-coded element, because colour
            there carries real information (which beat is GO)
          * one accent for the whole panel -- GO.  There is no second accent
            to dilute it
+         * a press button exists only when THIS panel is the observation
+           surface; when a sensor owns the evidence it is not rendered at all,
+           because a button that cannot count as evidence must not be the
+           biggest interactive thing on the screen
+         * telemetry is folded away: an operator reads the clock alignment
+           once and then ignores it forever
          * structure is drawn with hairlines, not with nested cards
          * every number is tabular, so a changing digit never shifts its
            neighbours
@@ -207,8 +217,28 @@
     .runid{font:11px/1 var(--mono);color:var(--dim2);
       white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 
-    .instr{font-size:clamp(16px,2.7vmin,23px);font-weight:600;line-height:1.3;
-      letter-spacing:-.012em;overflow:hidden;text-overflow:ellipsis}
+    /* THE INSTRUCTION IS THE CONTENT.
+
+       This component exists to tell a person "at this instant, do that".  The
+       countdown is the *clock* attached to that sentence, not the point of it --
+       so the sentence gets the largest type on the surface, and it is allowed to
+       be several lines.  The documented main use case is one cue whose
+       instruction holds a whole timeline (docs/usage-findings.md §5):
+
+         +0s   三颗全灭 → led_all_off.jpg
+         +30s  三颗全亮 → led_all_on.jpg
+
+       `white-space:normal` collapsed those four lines into one run-on sentence
+       (measured: 4 source lines rendered as 3, and "+30s" did not start a line at
+       all), so a timeline was unreadable exactly where reading it is the job.
+       `pre-line` keeps the author's line breaks and still wraps long prose.
+
+       It used to be clamp(16px,2.7vmin,23px) -- smaller than the 58 px countdown
+       and sharing the card with a 97 px telemetry table, i.e. the least prominent
+       text on a panel whose only job is to deliver it. */
+    .instr{font-size:clamp(19px,3.6vmin,32px);font-weight:600;line-height:1.32;
+      letter-spacing:-.014em;white-space:pre-line;overflow-wrap:anywhere;
+      overflow:hidden;text-overflow:ellipsis}
     .instr:empty{display:none}
     .guide{font-size:clamp(11px,1.5vmin,13px);color:var(--dim2);line-height:1.5}
     .guide:empty{display:none}
@@ -229,19 +259,43 @@
     /* ------------------------------------------------------------ the clock */
     .clockwrap{display:flex;flex-direction:column;align-items:center;justify-content:center;
       min-height:0;gap:clamp(3px,1vmin,10px)}
+
+    /* THE COUNTDOWN'S SIZE DEPENDS ON WHAT IT IS COMPETING WITH.
+
+       The countdown is the largest reading *when it is the thing to read*.  Two
+       cases where it is not, and both were measured:
+
+       1. **A multi-line instruction.**  The documented main use case is one cue
+          whose instruction holds a whole timeline (4 lines).  With the digits at
+          their full size the eye lands on "18" first and the timeline second,
+          which is backwards -- the timeline is what the person has to work
+          through.  So the clock scales with how much text it is sharing the card
+          with (`--clock-scale`, set from the measured line count).
+
+       2. **After GO.**  The action is over.  `+22.8` (seconds since the target)
+          is a diagnostic, not an instruction -- it was rendering at 40px, 37% of
+          the countdown's size, still the second-biggest thing on the panel.  Now
+          it is a quiet note under the phase line's wording.
+
+       `--clock-scale` rather than three hard-coded sizes: the vmin term has to
+       keep responding to a window resize, so the base stays a clamp() and only
+       the multiplier moves. */
+    :root{--clock-scale:1}
     #clock{
-      font:600 clamp(56px,24vmin,190px)/0.95 "Inter","Noto Sans SC",system-ui,sans-serif;
+      --clock-base:clamp(56px,24vmin,190px);
+      font:600 calc(var(--clock-base) * var(--clock-scale))/0.95
+            "Inter","Noto Sans SC",system-ui,sans-serif;
       letter-spacing:-.05em;
       font-variant-numeric:tabular-nums;font-feature-settings:"tnum" 1,"cv01" 1;
       color:var(--fg);
       transition:color .12s var(--ease)}
     #clock.go{color:var(--accent)}
-    /* Tail (time since GO) is a secondary reading: the action is already over,
-       so it must not compete with the countdown it just replaced.  It was
-       clamp(32,12vmin,96) -- 55px at 460 wide, i.e. larger than the 4-character
-       "+7.9" needs, which pulled the eye away from the meter where the actual
-       verdict appears. */
-    #clock.tail{color:var(--dim2);font-size:clamp(26px,9vmin,72px)}
+    /* Tail (time since GO) is a diagnostic reading: the action is already over,
+       so it must not compete with the instruction or the verdict.  Measured at
+       clamp(26,9vmin,72) it was 40px at 446 wide -- still the second-largest
+       thing on the card, for a number nobody acts on. */
+    #clock.tail{color:var(--dim2);
+      font-size:clamp(18px,4.6vmin,34px);font-weight:500;letter-spacing:-.02em}
     #clock.ready{color:var(--dim);font-size:clamp(32px,13vmin,100px);font-weight:500}
     /* Idle: there is no reading to show.  A 190px "--" renders as two fat
        bars and reads as a broken/loading skeleton, so the placeholder drops
@@ -301,12 +355,27 @@
 
     /* ------------------------------------------------------------- actions */
     .actions{display:grid;gap:clamp(7px,1.5vmin,12px)}
-    /* The primary control.  Rest = neutral raised surface, accent = GO,
-       green = the press registered.  Its contrast is checked in all three. */
+
+    /* THE GO BUTTON IS NOT THE POINT OF THE PANEL.
+
+       The panel's job is to tell a person what to do at a given instant.  A big
+       "press on GO" button was, by area, the most prominent interactive thing on
+       the surface -- so whatever the agent asked for, the interface said "press
+       this".  It also had a second, worse failure: it only makes sense when the
+       PANEL is the thing observing the operator.  When a real sensor owns the
+       evidence (a serial prompt, a console key -- the production shape), the
+       button was hidden but still reserved its row, and the operator's actual
+       task was relegated to the phrase "按上面说的做".
+
+       So it exists only when it is the measurement surface, and it no longer
+       claims to be a control panel: it is a target to hit, sized as a target, and
+       it says what it measures.  `body.sensor-owned` (set by applySchedule) hides
+       the whole block so the instruction can use the space. */
+    body.sensor-owned #press{display:none}
     #press{
       width:100%;border:1px solid var(--line);border-radius:var(--r);
-      padding:clamp(12px,3.2vmin,26px) 16px;
-      font-size:clamp(15px,2.8vmin,25px);font-weight:600;letter-spacing:.02em;
+      padding:clamp(10px,2.4vmin,20px) 16px;
+      font-size:clamp(13px,2.1vmin,18px);font-weight:600;letter-spacing:.02em;
       color:var(--fg);background:var(--raised);
       /* colour is deliberately NOT transitioned: the instant the button turns
          GO-amber or press-green is exactly when its label must be readable,
@@ -338,10 +407,18 @@
     .ghost:active{transform:scale(.99)}
 
     /* --------------------------------------------------------------- meter */
-    /* Telemetry, not content.  It is deliberately the quietest block on the
-       surface: mono numerals, no boxes, one hairline to separate it from the
-       controls.  The operator reads it once to confirm alignment, then
-       ignores it. */
+    /* Telemetry, not content -- and it used to cost 97 px of a 524 px card, i.e.
+       4.6x the height of the instruction sentence it sat underneath.  For a
+       component whose whole job is to deliver that sentence, that is the
+       hierarchy upside down: the operator reads the numbers once to confirm the
+       clock is aligned and then ignores them forever.
+
+       So it is collapsed by default to the one row that is part of the cue itself
+       (how many beats are planned), and the rest is one click away.  The toggle
+       is a real button with aria-expanded, not a hover trick: this runs on a
+       bench, often with a gloved hand, and a hidden affordance is not an
+       affordance.  Expanded state is remembered per session so a debugging
+       operator does not have to re-open it every cue. */
     .meter{border-top:1px solid var(--line);padding-top:clamp(7px,1.3vmin,12px);
       display:grid;gap:clamp(2px,.6vmin,5px);
       font-size:clamp(10.5px,1.4vmin,12.5px)}
@@ -353,6 +430,18 @@
       font-family:var(--mono);white-space:nowrap;
       overflow:hidden;text-overflow:ellipsis;text-align:right;
       font-variant-numeric:tabular-nums}
+    /* Everything except the beat count.  `:not(.always)` rather than listing the
+       rows: a row added later is hidden by default, which is the safe direction
+       (a stray diagnostic line must never push the instruction out). */
+    body:not(.meter-open) .m:not(.always){display:none}
+    #meter-toggle{margin-top:clamp(5px,1vmin,8px);align-self:start;
+      padding:3px 9px;border-radius:var(--r-pill);
+      font-size:clamp(10px,1.3vmin,11.5px);color:var(--dim2);
+      background:transparent;border:1px solid var(--line);
+      transition:background var(--dur) var(--ease),color var(--dur) var(--ease)}
+    #meter-toggle:hover{background:var(--raised);color:var(--fg);border-color:var(--line-2)}
+    #meter-toggle::after{content:" ›";opacity:.7}
+    body.meter-open #meter-toggle::after{content:" ‹"}
     /* .ok / .bad are applied by the timing core.  Declared here so the two
        names the JS already uses actually exist. */
     .ok,.good{color:var(--ok)!important}
@@ -511,6 +600,10 @@
     </div>
     <div id="grid"></div>
     <div class="actions">
+      <!-- Only when THIS panel is the observation surface.  When a real sensor
+           owns the evidence the whole block is hidden by `body.sensor-owned`:
+           the operator's job is the instruction, and a button that cannot count
+           as evidence must not be the biggest thing on the screen. -->
       <button id="press" disabled>GO 时按下</button>
       <div class="row">
         <button class="ghost" id="start" hidden>立即开始</button>
@@ -518,11 +611,12 @@
       </div>
     </div>
     <div class="meter">
+      <div class="m always"><span>栅格</span><b id="m-beats">--</b></div>
       <div class="m"><span>时钟偏移 · 客户端→服务端</span><b id="m-offset">--</b></div>
       <div class="m"><span>往返延迟</span><b id="m-rtt">--</b></div>
       <div class="m"><span>音频调度</span><b id="m-audio">--</b></div>
       <div class="m"><span>你的按压 vs GO</span><b id="m-result">--</b></div>
-      <div class="m"><span>栅格</span><b id="m-beats">--</b></div>
+      <button id="meter-toggle" aria-expanded="false" aria-controls="meter-rows">遥测</button>
     </div>
   </div>
 
@@ -623,6 +717,7 @@ const S = {
   lastSeq: 0,
   generation: 0,
   armedNotified: false,
+  queued: 0,             // cues armed behind the one on screen
 };
 
 /* ------------------------------------------------------------ clock sync */
@@ -788,6 +883,35 @@ function fitRail() {
   }
 }
 
+/* How many lines the instruction actually needs, and the clock scale that fits.
+
+   The countdown is the largest reading only while it is the thing to read.  With
+   a four-line timeline above it the eye landed on "18" first and on the timeline
+   second -- measured at 107px for the digits against 25px per instruction line --
+   which is backwards: the timeline is what the person works through.
+
+   So the digits scale with how much text they share the card with.  The tiers are
+   coarse on purpose (a continuously-varying size would make the countdown move
+   whenever a word wrapped, and a moving target is the one thing this component
+   must never be).  Measured on a 446x583 card: 1 line 107px, 2 lines 86px,
+   3 lines 75px, 4+ lines 64px -- always still the biggest single number, never
+   bigger than the text block it is timing. */
+const CLOCK_SCALE_BY_LINES = { 1: 1.0, 2: 0.8, 3: 0.7 };
+const CLOCK_SCALE_MIN = 0.6;          // 4+ lines
+
+function fitInstruction() {
+  const e = $("instruction");
+  if (!e) return 0;
+  // Measured from the laid-out box, not from `\n` count: a long single line that
+  // WRAPS also costs vertical room, so counting newlines would under-report it.
+  const cs = getComputedStyle(e);
+  const lh = parseFloat(cs.lineHeight) || parseFloat(cs.fontSize) * 1.3;
+  const lines = Math.max(1, Math.round(e.getBoundingClientRect().height / lh));
+  const scale = CLOCK_SCALE_BY_LINES[lines] ?? CLOCK_SCALE_MIN;
+  document.documentElement.style.setProperty("--clock-scale", String(scale));
+  return lines;
+}
+
 function buildGrid() {
   const g = $("grid"); g.innerHTML = "";
   if (!S.sched) return;
@@ -934,6 +1058,10 @@ function tick() {
    cue" instead of freezing on a stale tail number. */
 function goIdle() {
   document.body.classList.add("idle");
+  // The sensor-owned state is per-cue, not per-session: the next cue may well
+  // have the panel as its observation surface, and leaving the class set would
+  // hide the button on a cue that needs it.
+  document.body.classList.remove("sensor-owned");
   $("clock").textContent = "--";
   $("clock").className = "clock";
   $("phase").textContent = "";
@@ -944,6 +1072,16 @@ function goIdle() {
   $("press").textContent = "GO 时按下";
   $("press").disabled = true;
   $("start").hidden = true;
+  // The idle copy is a new base sentence; a queued count carried over from the
+  // finished cue would otherwise be re-appended to a sentence about the cue
+  // that just ended.
+  $("guidance").textContent = "";
+  $("guidance").dataset.base = "";
+  $("guidance").dataset.shown = "";
+  setQueuedCount(S.queued);
+  // No cue -> no instruction -> full-size clock again, so the next cue starts
+  // from a clean scale rather than inheriting the last one's.
+  document.documentElement.style.setProperty("--clock-scale", "1");
   // Clearing these is what stops tick() from repainting over the idle state.
   S.sched = null;
   S.zeroMs = null;
@@ -985,6 +1123,30 @@ async function doPress(ev) {
 }
 
 /* ------------------------------------------------------------------- cue */
+/** Human words for the conductor's internal source names.
+ *
+ *  `expect_source` is an enum (console_key | stdin_line | http | serial | sim |
+ *  none) and it was being printed straight into the operator's instruction line:
+ *
+ *    机器会在 console_key 上确认。
+ *
+ *  — an implementation detail in English snake_case, on the one line a person
+ *  reads from across a bench.  The enum is the agent's vocabulary; this is the
+ *  operator's.  Unlisted values fall back to the raw name so a source added
+ *  later is visibly unnamed rather than silently mislabelled. */
+const SOURCE_WORDS = {
+  console_key: "控制台按键",
+  stdin_line:  "终端输入",
+  serial:      "串口",
+  http:        "面板",
+  sim:         "模拟源",
+  none:        "面板",
+  "":          "面板",
+};
+function sourceWord(src) {
+  return SOURCE_WORDS[src] || src;
+}
+
 async function applySchedule(sched) {
   S.sched = sched;
   S.runId = sched.run_id;
@@ -998,6 +1160,14 @@ async function applySchedule(sched) {
 
   $("runid").textContent = sched.run_id || "--";
   $("instruction").textContent = sched.instruction || "Act now";
+  // Reset the clock scale to full BEFORE the async re-measure.  `--clock-scale`
+  // lives on the document, so it outlives the cue that set it: without this, a
+  // cue arriving while the previous one's value was still applied rendered its
+  // countdown at the OLD scale until `fitInstruction()` ran a frame later.
+  // Measured as a flaky audit -- the same cue measuring 58px on one run and
+  // 107px on the next -- which is worse than either value, because it makes the
+  // instrument look non-deterministic.
+  document.documentElement.style.setProperty("--clock-scale", "1");
   document.body.classList.remove("idle");
   $("state").textContent = "提示已就绪";
   $("live").classList.add("live");
@@ -1011,6 +1181,10 @@ async function applySchedule(sched) {
   const panelObserved = ["", "none", "http", "inject"].includes(observedBy);
   S.panelObserved = panelObserved;
 
+  // Hide the whole press block, not just the button: a hidden button still
+  // reserved its row, and left a lone "重新校时" where the operator expected to
+  // find what to do.  The class lets the instruction take the space instead.
+  document.body.classList.toggle("sensor-owned", !panelObserved);
   $("press").disabled = !panelObserved;
   $("press").textContent = panelObserved ? "GO 时按下" : "按上面说的做";
   $("press").classList.remove("hit", "go", "beat");
@@ -1025,20 +1199,45 @@ async function applySchedule(sched) {
     + (sched.target_wall_ms ? ` · GO at ${new Date(sched.target_wall_ms).toLocaleTimeString()}` : "");
   buildGrid();
   const n = scheduleCue();
+  // The instruction is the content; this line only says *when*.
+  //
+  // Two rules, both learned from looking at the rendered panel:
+  //
+  //   * never end in "踩在它上面按下" -- that teaches the operator to react to
+  //     the stimulus instead of performing the action the agent asked for, which
+  //     is the exact inversion this component exists to avoid;
+  //   * keep it to one line.  The sensor branch used to run
+  //     "...机器会在 console_key 上确认。" which wrapped to THREE rendered lines
+  //     (measured), pushing the countdown down and printing an internal enum at
+  //     a person.  The channel name is now a human word and the sentence is short
+  //     enough that the clock keeps its room.
   if (panelObserved) {
     $("guidance").textContent = sched.audio
-      ? "听脉冲，重拍就是 GO，踩在它上面按下。"
-      : "看栅格，重拍就是 GO，踩在它上面按下。";
+      ? "听脉冲，重拍就是 GO：在那一刻做上面那件事。"
+      : "看栅格，重拍就是 GO：在那一刻做上面那件事。";
   } else {
-    // Name the channel the agent is actually watching, so the human knows the
-    // machine is watching the hardware and not asking to be clicked.
+    // Say who owns the evidence, so the operator knows the machine is watching
+    // the hardware rather than waiting to be clicked.
+    const word = sourceWord(observedBy);
     $("guidance").textContent = sched.audio
-      ? `听脉冲，重拍就是 GO。在那一刻完成上面的动作，机器会在 ${observedBy} 上确认。`
-      : `看栅格，重拍就是 GO。在那一刻完成上面的动作，机器会在 ${observedBy} 上确认。`;
+      ? `听脉冲，重拍就是 GO。做完就行，机器在${word}上确认。`
+      : `看栅格，重拍就是 GO。做完就行，机器在${word}上确认。`;
   }
   if (n === 0) {
-    $("guidance").textContent = "栅格在页面就绪前就播完了，仍可按下来记录时刻。";
+    $("guidance").textContent = panelObserved
+      ? "栅格在页面就绪前就播完了，仍可按下来记录时刻。"
+      : "栅格在页面就绪前就播完了，按原计划做就行。";
   }
+  // A new cue means a fresh base sentence; the queued count is re-applied on
+  // top of it (see setQueuedCount) so the "and then?" line survives this render.
+  $("guidance").dataset.base = $("guidance").textContent;
+  $("guidance").dataset.shown = "";
+  setQueuedCount(S.queued);
+  // The instruction's height is what the clock has to share the card with, and
+  // it is only knowable after layout.  Measured next frame rather than now: the
+  // text was just written, and reading a box in the same task returns the old
+  // geometry.
+  requestAnimationFrame(fitInstruction);
 }
 
 function pollEvents() {
@@ -1047,7 +1246,12 @@ function pollEvents() {
     S.lastSeq = d.events[d.events.length - 1].seq;
     for (const e of d.events) {
       if (e.kind === "run_end") {
-        $("state").textContent = "已结束 · " + (e.detail.status || "?");
+        // Say the VERDICT, not the state-machine name.  `status: timeout` on a
+        // cue that asked nobody for anything is that cue's successful end, and
+        // "已结束 · timeout" was read as a failure by the first person who tried
+        // it (docs/usage-findings.md §4).  The conductor publishes `verdict`
+        // precisely so this line does not have to explain the state machine.
+        $("state").textContent = "已结束 · " + verdictLabel(e.detail);
         $("live").classList.remove("live");
         $("press").disabled = true;
         // Mark it finished, but let tick() decide when the tail is over.
@@ -1057,8 +1261,53 @@ function pollEvents() {
   }).catch(() => {});
 }
 
+/* One place that turns a run's outcome into words the operator can act on.
+   `verdict` is the meaning; `status` is only kept as a fallback for an older
+   conductor that has not started publishing it. */
+const VERDICT_TEXT = {
+  ok:          "已完成",
+  signal_missing: "没收到动作",
+  unverified:  "收到动作，未确认生效",
+  cancelled:   "已取消",
+  error:       "出错",
+};
+function verdictLabel(detail) {
+  const v = detail && detail.verdict;
+  if (v && VERDICT_TEXT[v]) return VERDICT_TEXT[v];
+  if (v) return v;
+  // No verdict: an older conductor.  Its `status` is all there is, and "timeout"
+  // would be the misreading this whole function exists to prevent.
+  const s = detail && detail.status;
+  return { satisfied: "已完成", aborted: "已取消", error: "出错" }[s] || (s || "?");
+}
+
 /* Long-poll for the next armed cue: the page must react the instant a cue is
    armed, including when it was opened long before it was needed.            */
+/* How many cues are waiting behind this one.  Shown in the guidance line
+   because the operator's next question after "what do I do" is "and then?":
+   without it they walk away after the first cue and miss the second countdown,
+   which starts by itself as soon as this one ends.  It is also the honest
+   answer to the older behaviour where a second cue silently replaced the first. */
+function noteQueued(ids) {
+  setQueuedCount(Array.isArray(ids) ? ids.length : 0);
+}
+
+function setQueuedCount(n) {
+  const el = $("guidance");
+  if (!el) return;
+  // Repaint whenever the base sentence changed as well, not only when `n` did:
+  // a new cue rewrites the guidance line, and returning early on an unchanged
+  // count left the "N more coming" suffix silently dropped for the rest of the
+  // run -- the one cue where the operator most needs to know another is coming.
+  const base = el.dataset.base || "";
+  if (n === S.queued && el.dataset.shown === String(n)) return;
+  S.queued = n;
+  el.dataset.shown = String(n);
+  el.textContent = n
+    ? base + (base ? " · " : "") + `还有 ${n} 个提示排在后头，这个结束后会自动开始`
+    : base;
+}
+
 function waitArmed() {
   fetch(apiURL("/api/wait-armed?timeout=25&since=" + (S.generation || 0)), { cache: "no-store" })
     .then(r => r.json())
@@ -1069,9 +1318,11 @@ function waitArmed() {
           // Already displaying this cue (or it has already run to completion).
           // Re-applying it would reset the press result the human is looking
           // at, replay the audio, and resurrect a finished cue's grid.
+          noteQueued(d.queued);
           return;
         }
         const s = await (await fetch(apiURL("/api/schedule?run_id=" + encodeURIComponent(d.run_id)), { cache: "no-store" })).json();
+        noteQueued(d.queued);
         // Only a LIVE run is worth rendering.  A finished one still carries its
         // beats, so rendering it blindly would bring a spent cue back to life.
         if (s && s.beats && s.beats.length && s.status === "running") { await applySchedule(s); pollEvents(); return; }
@@ -1083,8 +1334,13 @@ function waitArmed() {
           $("instruction").textContent = s.instruction || "Cue ready";
           $("state").textContent = "已武装（未开始）";
           $("guidance").textContent = "提示已武装，由 agent 决定何时开始。也可现在按「立即开始」。";
+          $("guidance").dataset.base = $("guidance").textContent;
+          $("guidance").dataset.shown = "";
+          setQueuedCount(S.queued);
           $("start").hidden = false;
         }
+      } else if (d) {
+        noteQueued(d.queued);
       }
     })
     .catch(() => {})
@@ -1094,6 +1350,15 @@ function waitArmed() {
 /* ------------------------------------------------------------------ boot */
 $("press").addEventListener("pointerdown", doPress);
 $("resync").addEventListener("click", async () => { await syncClock(); if (S.sched) scheduleCue(); });
+/* Telemetry fold.  Remembered for the session so an operator who is debugging
+   the clock does not have to re-open it on every cue -- but it starts closed,
+   because for the normal case those four rows are pure noise under the one
+   sentence the panel exists to deliver. */
+$("meter-toggle").addEventListener("click", () => {
+  const open = document.body.classList.toggle("meter-open");
+  $("meter-toggle").setAttribute("aria-expanded", open ? "true" : "false");
+  $("meter-toggle").textContent = open ? "收起遥测" : "遥测";
+});
 $("upd-check").addEventListener("click", async () => {
   if (!shellBackend()) { renderUpdate({phase: "unsupported"}); return; }
   renderUpdate(await shellCall("update_check"));
@@ -1291,7 +1556,7 @@ let healthNote = "";
 let healthContract = null;
 //: The contract this page speaks.  Must equal CONTRACT_VERSION in
 //: chrono_handoff/__init__.py; build.py's version gate compares them.
-const PAGE_CONTRACT = 2;
+const PAGE_CONTRACT = 3;
 
 /* Why this page must not drive the conductor that just answered.
 
@@ -1838,11 +2103,11 @@ function wireShell() {
   // fit into does -- and dragging the SE grip is the normal way to use this
   // widget, so this is a hot path, not an edge case.  Resizing smaller is
   // exactly when a rail that fitted a moment ago starts overflowing.
-  addEventListener("resize", () => { fitRail(); guardClipping(); });
+  addEventListener("resize", () => { fitRail(); fitInstruction(); guardClipping(); });
   if (typeof ResizeObserver !== "undefined") {
     // The window can be resized by the shell without a window resize event
     // reaching the page in every host, so watch the grid's own box too.
-    new ResizeObserver(() => { fitRail(); guardClipping(); }).observe($("grid"));
+    new ResizeObserver(() => { fitRail(); fitInstruction(); guardClipping(); }).observe($("grid"));
   }
 }
 

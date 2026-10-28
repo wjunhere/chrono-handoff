@@ -560,12 +560,21 @@ class ConductorServer:
             return c.stand_down()
         if method == "submit":
             plan = plan_from_dict(dict(params.get("plan") or {}))
-            run = c.submit(plan, paused=bool(params.get("paused", False)))
+            run = c.submit(
+                plan,
+                paused=bool(params.get("paused", False)),
+                queue=bool(params.get("queue", True)),
+            )
             return {
                 "run_id": run.id,
                 "status": run.status.value,
+                "queued_behind": run.queued_behind,
                 "journal": str(c.journal_dir / f"{run.id}.jsonl"),
-                "hint": "end your turn; poll chrono_observe(run_id) later",
+                "hint": (
+                    f"queued behind {run.queued_behind}; it starts when that cue ends"
+                    if run.queued_behind
+                    else "end your turn; poll chrono_observe(run_id) later"
+                ),
             }
         if method == "observe":
             return {
@@ -669,6 +678,10 @@ INSTRUCTIONS = (
     "at a specific instant (press, plug, power-cycle); it pops an always-on-top "
     "countdown panel and returns immediately. Never block on a human: arm the "
     "cue, end the turn, then poll with chrono_observe. "
+    "One cue at a time: a second cue is queued behind the one on screen and "
+    "starts by itself when that one finishes (queue=false to run alongside). "
+    "Read `verdict`, not `status`, to decide whether a run went to plan: a cue "
+    "that expected no signal ends `status: timeout` with `verdict: ok`. "
     "Keyword families: countdown, timer, operator cue, human in the loop, "
     "physical action, schedule at time, press reset, notify operator."
 )

@@ -131,9 +131,14 @@ def main() -> int:
 
     # (3) window closed; daemon must still be alive and serving
     OUT["daemon_alive_after_close"] = agent.healthy()
+    # `queue=False` on purpose: the cue armed for the window (r2) may still be
+    # running, and the point of this check is that a cue fires with no display
+    # attached -- not that it waits its turn.  With the default `queue=True` the
+    # conductor would (correctly) hold it back until r2's grid ended, and this
+    # check would then be measuring the queue instead of the daemon.
     r3 = agent.call("cue", instruction="press RESET (window closed again)",
                     target_in_s=1.2, lead_s=0.5, ioi_ms=250, tail_beats=2,
-                    expect_source="none", duration_s=3, open_panel=False)
+                    expect_source="none", duration_s=3, open_panel=False, queue=False)
     st = "unknown"
     deadline = time.time() + 7
     while time.time() < deadline:

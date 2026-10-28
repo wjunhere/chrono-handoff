@@ -238,7 +238,7 @@ fn current_geometry(window: &tauri::WebviewWindow) -> Option<SavedGeometry> {
 /// Must equal `CONTRACT_VERSION` in `chrono_handoff/__init__.py`; the sidecar
 /// build's self-check compares the frozen app's declaration against the source
 /// checkout's, so the two cannot drift without failing a build.
-const CONTRACT: u64 = 2;
+const CONTRACT: u64 = 3;
 
 /// Whether a conductor that declared `conductor` is one this shell may use.
 ///

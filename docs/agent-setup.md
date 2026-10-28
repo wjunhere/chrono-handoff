@@ -207,6 +207,29 @@ chrono_cue(
 
 **它立刻返回，不等人类。** agent 应该结束本 turn，稍后 `chrono_observe(run_id)` 拿结果。
 
+参数直接写在工具签名上（`Annotated[..., Field(description=...)]`），
+agent 看得到每个字段的说明与默认值，不需要额外包一层 `args`。
+
+### 一次只响一条
+
+`queue` 默认为 true：屏幕上还有 cue 在跑时，新的一条记为 `pending` 并排在它后面，
+等前一条的拍子播完自动开始，返回值里 `queued_behind` 说明排在谁后面。
+人只有一双眼睛，两条同时跑的 cue 不是两个提示——第二个会把第一个从面板上顶掉。
+真正需要并行时（一人一条）传 `queue=false`。
+
+### `status` 不是结论，`verdict` 才是
+
+| `status` | `verdict` | 意思 |
+|---|---|---|
+| `satisfied` | `ok` | 看到人的动作（或 verify 通过） |
+| `timeout` + 这条 run 等信号 | `signal_missing` | 人没做，或没被观测到 |
+| `timeout` + 这条 run 不等信号 | `ok` | 提示期正常结束——**这是成功** |
+| `partial` | `unverified` | 收到信号但未确认生效 |
+| `aborted` | `cancelled` | 被取消 |
+
+一个不要求人按任何键的 cue 到期会记成 `status: "timeout"`，那只是状态机
+走到的终态；它是否按计划结束看 `verdict`。分支判断请用 `verdict`。
+
 为什么这么设计 —— 这正是 README §一 的核心论点：
 
 | | 事件触发（错误做法） | 时间触发（本组件） |
@@ -250,7 +273,8 @@ chrono_cue(
 | agent 让人做危险动作 | `instruction` 只是文字提示；**真正的门控应放在执行前**（如 harness hook / 动作白名单），组件本身不阻止 agent 写危险指令 |
 | agent 绕过工具不调用 | 组件无法强制；这是所有 HITL 工具的共性（见 related-work §A 的 Pushary 警告） |
 | 重复执行副作用 | `on_window` 扫射天然幂等设计要求；串口动作请自行保证幂等 |
-| 提示被忽略 | `duration_s` 兜底，到点返回 `timeout` 而非挂起 |
+| 提示被忽略 | `duration_s` 兜底，到点结束而非挂起；`verdict` 说明这是否算成功 |
+| 两条 cue 叠在一起 | `queue` 默认串行化，后一条等前一条的拍子播完 |
 
 ---
 
@@ -258,14 +282,20 @@ chrono_cue(
 
 ```bash
 chrono selftest                 # 机制自检（10 项）
-python scripts/e2e_panel.py     # 面板 HTTP 全链路（20 项）
+python scripts/e2e_panel.py     # 面板 HTTP 全链路（52 项）
 python scripts/e2e_window.py    # 原生窗口（17 项）
-python scripts/e2e_ui_layout.py # 布局几何（18 项）
+python scripts/e2e_ui_layout.py # 布局几何 + 界面层级（39 项）
+python scripts/audit_panel.py   # 界面读数审计：字号/行数/占比（16 项）
 python scripts/e2e_resize.py    # 拖拽缩放（10 项）
 python scripts/e2e_theme_drag.py# 主题对比度 + 拖拽隔离（16 项）
-python scripts/e2e_daemon_window.py # 一体化模式（8 项）
+python scripts/e2e_daemon_window.py # 一体化模式（11 项）
 python scripts/e2e_split_mode.py    # 分离模式（13 项）
 ```
+
+`audit_panel.py` 与 `e2e_ui_layout.py` 管的是两件不同的事：前者断言**阅读顺序**
+（指令是否比所有周边字大、多行是否保留、倒计时是否让位、结束读数是否降级），
+后者断言**几何**（不裁切、导轨放得下、窗口控件可用）。前者专门盯一类后者永远
+抓不到的缺陷：全部“元素存在”与“没有溢出”都通过，而指令却是卡片上最不显眼的字。
 
 ---
 

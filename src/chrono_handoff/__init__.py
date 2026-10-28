@@ -21,6 +21,13 @@ __version__ = "0.1.1"
 #:
 #: Declared in exactly two places -- ``/api/health`` (HTTP) and ``ping`` (IPC) --
 #: both from this constant.
-CONTRACT_VERSION = 2
+#:
+#: 2 -> 3: a second cue no longer runs alongside the first; it is queued behind it
+#: (``queue`` defaults to true) and the page reports the queue.  Both are changes
+#: to what an existing answer *means*: a page from build 2 would show the newest
+#: armed cue as if it were the only one, and would not know to say a second one
+#: is coming -- which is exactly the stale-file mismatch this number exists to
+#: catch.
+CONTRACT_VERSION = 3
 
 __all__ = ["CONTRACT_VERSION", "__version__"]

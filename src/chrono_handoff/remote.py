@@ -156,6 +156,20 @@ class RemoteConductor:
         except Exception:
             return {}
 
+    def list_runs(self, limit: int = 20) -> list[dict[str, Any]]:
+        """Recent runs, for the panel's "who is on screen" decision.
+
+        Part of the surface CuePanel touches: `current_run` asks this to tell a
+        live cue from one that is still queued behind it.  Missing it made a
+        display client fall back to "remember the last armed run", so in split
+        mode the panel kept showing a finished cue while the next one was
+        already running in the daemon.
+        """
+        try:
+            return list(self._c.call("list")["runs"])[-limit:]
+        except Exception:
+            return []
+
     # -- being stopped (the update path) ----------------------------------
 
     def update_ready(self) -> dict[str, Any]:

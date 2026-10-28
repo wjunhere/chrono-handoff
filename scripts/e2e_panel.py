@@ -314,6 +314,98 @@ def main() -> int:
         s2 = get(base + "/api/schedule?run_id=" + r2["run_id"])
         check("schedule available for the new run", len(s2.get("beats") or []) >= 3, f"{len(s2.get('beats') or [])} beats")
 
+        # ---- 11b. a second cue waits its turn, and the page is told ------
+        #
+        # A person can follow one countdown, so two live grids are not two cues:
+        # the second one silently replaced the first on screen, and the operator
+        # was left mid-countdown on a grid that had changed under them.  The fix
+        # has two halves and both are checked here: the conductor holds the second
+        # cue back, and the panel tells the page that one is waiting (otherwise the
+        # operator walks away after the first and misses the second countdown,
+        # which starts by itself a second later).
+        r3 = conductor.cue("third cue (queued)", target_in_s=0.8, lead_s=0.3, ioi_ms=200,
+                           tail_beats=2, expect_source="none", duration_s=1.2, open_panel=False)
+        check("a cue arriving during another is held back, not dropped",
+              r3["status"] == "pending" and r3.get("queued_behind") == r2["run_id"],
+              f"status={r3['status']} behind={r3.get('queued_behind')}")
+        h3 = get(base + "/api/health")
+        check("the panel shows the running cue, not the queued one",
+              h3.get("current_run") == r2["run_id"], f"current={h3.get('current_run')}")
+        check("the panel reports the queue so the operator knows one is coming",
+              r3["run_id"] in (h3.get("queued") or []), f"queued={h3.get('queued')}")
+        s3 = get(base + "/api/schedule?run_id=" + r3["run_id"])
+        check("a queued cue publishes no grid (it has none yet)",
+              s3.get("status") == "pending" and not s3.get("beats"),
+              f"status={s3.get('status')} beats={len(s3.get('beats') or [])}")
+
+        # The hand-over: r2 ends, r3 starts and takes the screen by itself.
+        handed = None
+        deadline = time.time() + 25.0
+        while time.time() < deadline:
+            hh = get(base + "/api/health")
+            if hh.get("current_run") == r3["run_id"]:
+                handed = hh
+                break
+            time.sleep(0.1)
+        check("the screen hands over to the queued cue when the first ends",
+              handed is not None, f"current={(handed or {}).get('current_run')}")
+        s3b = get(base + "/api/schedule?run_id=" + r3["run_id"])
+        check("...and by then it has a grid of its own",
+              s3b.get("status") == "running" and bool(s3b.get("beats")),
+              f"status={s3b.get('status')} beats={len(s3b.get('beats') or [])}")
+
+        # ---- 11c. the verdict says what the state name cannot -------------
+        #
+        # A cue that asked the human for nothing ends `timeout` when its budget
+        # runs out -- which is the *successful* end of that cue, and reads as a
+        # failure to anybody who has not memorised the state machine.  `verdict`
+        # is the sentence, and it is what a caller should branch on.
+        #
+        # `r2` has already run out (the hand-over above waited for exactly that).
+        st2 = conductor.status(r2["run_id"])
+        check("a cue that expected no signal ends with verdict=ok",
+              st2.get("verdict") == "ok",
+              f"status={st2.get('status')} verdict={st2.get('verdict')} reason={st2.get('verdict_reason')}")
+        check("...even though its state name is still 'timeout'",
+              st2.get("status") == "timeout", f"status={st2.get('status')}")
+        check("a cancelled run says cancelled, not timeout",
+              conductor.cancel(r3["run_id"], "e2e_cancel").get("verdict") == "cancelled",
+              conductor.status(r3["run_id"]).get("verdict") or "-")
+
+        # ---- 11d. the MCP tools publish their real parameters ------------
+        #
+        # `add_tool` derives the schema from the function signature and has no
+        # way to accept a hand-written one.  A hand-written table used to sit
+        # beside the tools and was never published, so every tool advertised a
+        # single property named `args` and the agent could not see `target_in_s`
+        # or `expect_source` at all.  Asking the server what it publishes is the
+        # only check that cannot be fooled by a comment claiming otherwise.
+        try:
+            from chrono_handoff.mcp_server import published_tool_schemas  # noqa: PLC0415
+
+            schemas = published_tool_schemas()
+            cue_schema = schemas.get("chrono_cue") or {}
+            props = set(cue_schema.get("properties") or {})
+            check("chrono_cue publishes its real parameters",
+                  {"instruction", "target_in_s", "lead_s", "ioi_ms", "expect_source"} <= props,
+                  f"{len(props)} properties")
+            check("chrono_cue does not hide everything behind one 'args' object",
+                  "args" not in props, f"properties={sorted(props)[:4]}...")
+            check("the only required parameter is the instruction",
+                  cue_schema.get("required") == ["instruction"],
+                  str(cue_schema.get("required")))
+            submit_props = set((schemas.get("chrono_submit") or {}).get("properties") or {})
+            check("chrono_submit publishes its nested plan fields too",
+                  {"expect_signal", "on_window", "offset_s", "meta"} <= submit_props,
+                  f"{len(submit_props)} properties")
+            defs = (schemas.get("chrono_submit") or {}).get("$defs") or {}
+            check("the nested structures carry their own field docs",
+                  "ExpectSignal" in defs and "source" in (defs["ExpectSignal"].get("properties") or {}),
+                  f"$defs={sorted(defs)}")
+        except ImportError:
+            print("  [SKIP] MCP not installed; tool schemas not published", flush=True)
+
+
         # ---- 12. the bind path must not ask DNS who we are --------------
         # `HTTPServer.server_bind` calls `socket.getfqdn(host)`; measured at 35.0s on
         # a GitHub macOS runner, inside the bind, so the conductor served nothing for

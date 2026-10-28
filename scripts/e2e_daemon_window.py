@@ -80,6 +80,23 @@ def main() -> int:
             OUT["page_beats"] = win.window.evaluate_js("S.sched ? S.sched.beats.length : 0")
             OUT["run_status_mid"] = client.call("status", run_id=r["run_id"])["status"]
 
+            # A second cue must not take the screen; it waits, and the page has to
+            # say so -- otherwise the operator finishes the first action and walks
+            # away from a countdown that starts by itself a second later.  Checked
+            # against the real page, because "the server knows" was never the
+            # interesting half.
+            r2 = client.call("cue", instruction="second action", target_in_s=2.0,
+                             lead_s=0.8, ioi_ms=300, tail_beats=2, expect_source="none",
+                             duration_s=5, open_panel=False)
+            OUT["second_cue_status"] = r2["status"]
+            OUT["second_cue_behind"] = r2.get("queued_behind")
+            deadline = time.time() + 5.0
+            while time.time() < deadline and not win.window.evaluate_js("S.queued"):
+                time.sleep(0.15)
+            OUT["page_queued_count"] = win.window.evaluate_js("S.queued")
+            OUT["page_guidance"] = win.window.evaluate_js('$("guidance").textContent')
+            OUT["page_still_on_first"] = win.window.evaluate_js("S.runId") == r["run_id"]
+
             # Wait out the budget; with expect_source="none" the cue must reach
             # TIMEOUT on its own rather than hanging.
             # Initialised so a deadline that expires before the first poll reports
@@ -140,6 +157,14 @@ def main() -> int:
     check("journal has a full cue", "cue_zero" in kinds and "cue_audit" in kinds,
           f"{len(kinds)} events")
     check("window raise was wired", True, f"hooked (a raise fires on each armed cue)")
+    check("a second cue is queued, not stacked",
+          OUT.get("second_cue_status") == "pending" and OUT.get("second_cue_behind") == OUT.get("cue", {}).get("run_id"),
+          f"status={OUT.get('second_cue_status')} behind={OUT.get('second_cue_behind')}")
+    check("the page is told a cue is waiting",
+          (OUT.get("page_queued_count") or 0) >= 1,
+          f"S.queued={OUT.get('page_queued_count')} guidance={str(OUT.get('page_guidance'))[-28:]!r}")
+    check("the page keeps showing the cue in progress",
+          OUT.get("page_still_on_first") is True)
 
     print()
     if FAILURES:

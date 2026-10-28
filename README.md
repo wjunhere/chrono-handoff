@@ -78,6 +78,10 @@ chrono submit --json '{
 
 返回 `run_id` 并立即退出；计划在 conductor 中执行。
 
+面板上最显眼的是 `instruction`——**做什么**——倒计时是挂在它上面的时基。
+只有 `expect_source` 为 `none`/`http`/`inject`（面板自己就是观测面）时才会出现
+一个按 GO 的按钮；真实传感器观测时它不渲染，因为那个按钮不能算证据。
+
 ```bash
 chrono status reset-demo            # 当前状态
 chrono observe reset-demo           # 增量读取事件日志
@@ -134,6 +138,14 @@ chrono_cue(
   tail_beats  = 6      # 命中后脉冲延续
 )
 ```
+
+参数直接写在工具签名上，agent 看得到全部字段与默认值。
+**一次只响一条**：如果屏幕上还有一条 cue 没跑完，新的会排在它后面，
+等前一条的拍子播完自动开始（`queue=false` 可关掉）。人只有一双眼睛，
+两条同时跑的 cue 不是两个提示，而是第二个把第一个顶掉。
+
+返回值里 `status` 是状态机、`verdict` 是结论。`verdict: "ok"` 才是“按计划结束”——
+一个不要求人按任何键的 cue 到期会记成 `status: "timeout"`，那是它的**成功**终态。
 
 ### CLI
 
@@ -288,6 +300,7 @@ Windows 11 / CPython 3.13，详见 [`docs/implementation-notes.md`](implementati
 | [`docs/m1.md`](docs/m1.md) | M1 测量实验方法 |
 | [`docs/theory.md`](docs/theory.md) | 理论依据（时间触发 / 人机节拍同步） |
 | [`docs/problem.md`](docs/problem.md) | 问题定义与量化 |
+| [`docs/usage-findings.md`](docs/usage-findings.md) | 实测踩坑记录（七个问题，均已有结论） |
 | [`docs/related-work.md`](docs/related-work.md) | 相关项目调研 |
 | [`case-studies/loongson-2k1000.md`](case-studies/loongson-2k1000.md) | 实例：龙芯 2K1000LA PMON 引导窗口捕获 |
 
