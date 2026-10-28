@@ -155,11 +155,21 @@ def main() -> int:
             # clock is deliberately small -- and reported "clock stays large when
             # tall 30.6px" as if the layout were wrong.  Measured over 26s: digits
             # appear ~3s after arming and hold until GO.
+            # The cue armed by the last `arm()` call.  A dict rather than a
+            # function attribute so it needs no `# type: ignore`: the two cues
+            # armed below must be handed the screen deliberately.
+            last_armed: dict[str, str] = {}
+
             def arm() -> None:
                 """Arm the cue and wait until its countdown is actually showing."""
-                w.conductor.cue(instruction="按一下开发板上的 RESET 键", target_in_s=9.0,
-                                lead_s=6.0, ioi_ms=500, tail_beats=6,
-                                expect_source="none", duration_s=20, open_panel=False)
+                # Recorded so a later cue can be handed the screen on purpose: with
+                # `queue=False` the panel keeps showing the cue the operator is
+                # already following, so a new one does not take over until this
+                # one ends.
+                armed = w.conductor.cue(instruction="按一下开发板上的 RESET 键", target_in_s=9.0,
+                                        lead_s=6.0, ioi_ms=500, tail_beats=6,
+                                        expect_source="none", duration_s=20, open_panel=False)
+                last_armed["id"] = armed["run_id"]
                 # Both conditions, because either alone is satisfied by a page with
                 # nothing to show yet: a fresh page renders `--` with an empty grid,
                 # and the grid comes from the schedule the page polls for.  Measured
@@ -179,6 +189,116 @@ def main() -> int:
             OUT["phase_text"] = js("document.getElementById('phase').textContent")
             OUT["press_label"] = js("document.getElementById('press').textContent.trim()")
             OUT["cells"] = js("document.querySelectorAll('#grid .cell').length")
+
+            # ---- the instruction is the content, the clock is its timebase ----
+            #
+            # This component tells a person what to do at an instant.  The panel
+            # used to render that sentence at 16px with `white-space:normal` while
+            # a 58px countdown and a 97px telemetry table shared the card -- the
+            # least prominent text on a surface whose only job is to deliver it,
+            # with its line breaks collapsed (a documented timeline rendered as a
+            # run-on sentence).  These are the properties that make it readable.
+            OUT["hierarchy"] = js('''(() => {
+                const e = document.getElementById("instruction");
+                const cs = getComputedStyle(e);
+                const lh = parseFloat(cs.lineHeight);
+                return {
+                  fontPx: parseFloat(cs.fontSize),
+                  clockFontPx: parseFloat(getComputedStyle(document.getElementById("clock")).fontSize),
+                  whiteSpace: cs.whiteSpace,
+                  boxPx: Math.round(e.getBoundingClientRect().height),
+                  lines: Math.round(e.getBoundingClientRect().height / lh),
+                };})()''')
+            # The documented multi-line case: the same element with real breaks.
+            #
+            # The clock is expected to shrink here, and that is the point: with a
+            # four-line timeline the eye landed on the 107px digits first and on
+            # the timeline second, which is backwards -- the timeline is what the
+            # person works through.  `fitInstruction()` scales the digits with the
+            # measured line count (1.0 / 0.8 / 0.7 / 0.6), so this measures the
+            # effect of that, not just the wrapping.
+            OUT["timeline"] = js('''(() => {
+                const e = document.getElementById("instruction");
+                const ck = document.getElementById("clock");
+                const before = e.textContent;
+                const clockBefore = parseFloat(getComputedStyle(ck).fontSize);
+                e.textContent = ["+0s   三颗全灭 → a.jpg", "+30s  三颗全亮 → b.jpg",
+                                 "+60s  只亮中间 → c.jpg", "+90s  三颗闪烁 → 录像"].join(
+                                   String.fromCharCode(10));
+                fitInstruction();
+                const lh = parseFloat(getComputedStyle(e).lineHeight);
+                const r = { lines: Math.round(e.getBoundingClientRect().height / lh),
+                            clipped: e.scrollHeight > e.clientHeight + 1,
+                            scale: getComputedStyle(document.documentElement)
+                                     .getPropertyValue("--clock-scale").trim(),
+                            clockAfter: parseFloat(getComputedStyle(ck).fontSize),
+                            clockBefore: clockBefore,
+                            instrFont: parseFloat(getComputedStyle(e).fontSize) };
+                e.textContent = before;
+                fitInstruction();
+                return r;})()''')
+            OUT["clock_after_tail"] = js('''(() => {
+                const ck = document.getElementById("clock");
+                const prev = ck.className;
+                ck.className = "clock tail";
+                ck.textContent = "+22.8";
+                const tail = parseFloat(getComputedStyle(ck).fontSize);
+                ck.className = "clock";
+                const countdown = parseFloat(getComputedStyle(ck).fontSize);
+                ck.className = prev;
+                return { tail: tail, countdown: countdown, ratio: tail / countdown };})()''')
+            OUT["meter_folded"] = js('''(() => {
+                const rows = [...document.querySelectorAll(".m")];
+                return { total: rows.length,
+                         visible: rows.filter(m => m.getBoundingClientRect().height > 0).length,
+                         boxPx: Math.round(document.querySelector(".meter").getBoundingClientRect().height),
+                         toggle: !!document.getElementById("meter-toggle"),
+                         expanded: document.getElementById("meter-toggle").getAttribute("aria-expanded") };})()''')
+            js('document.getElementById("meter-toggle").click()')
+            time.sleep(0.25)
+            OUT["meter_expanded"] = js('''(() => {
+                const rows = [...document.querySelectorAll(".m")];
+                return { visible: rows.filter(m => m.getBoundingClientRect().height > 0).length,
+                         expanded: document.getElementById("meter-toggle").getAttribute("aria-expanded") };})()''')
+            js('document.getElementById("meter-toggle").click()')
+            time.sleep(0.25)
+
+            # ---- a sensor-owned cue must not advertise a button -------------
+            # When a real sensor owns the evidence the press button cannot count,
+            # so it must not be the biggest interactive thing on the surface.  It
+            # used to be hidden but still reserved its row, leaving the operator's
+            # real task labelled "按上面说的做".
+            #
+            # `queue=False` on purpose: the cue armed above is still running, and
+            # with the default queue this one would (correctly) wait behind it and
+            # never take the screen -- so the check would be measuring the queue
+            # instead of the sensor-owned layout.  This is the "run alongside"
+            # escape hatch doing its job.
+            #
+            # Cancelling the earlier cue is what makes the panel hand the screen
+            # over: with `queue=False` two grids really are live at once, and the
+            # panel deliberately stays with the cue the operator is already
+            # following rather than yanking it away mid-countdown.
+            if last_armed.get("id"):
+                w.conductor.cancel(last_armed["id"], "test_handover")
+                time.sleep(0.6)
+            w.conductor.cue(instruction="给板载 LED 拍照", target_in_s=9.0, lead_s=6.0,
+                            ioi_ms=500, tail_beats=6, expect_source="stdin_line",
+                            duration_s=20, open_panel=False, queue=False)
+            deadline = time.time() + 12.0
+            while time.time() < deadline:
+                if js("document.body.classList.contains('sensor-owned')"):
+                    break
+                time.sleep(0.2)
+            OUT["sensor_owned"] = js('''(() => {
+                const g = document.getElementById("guidance");
+                const cs = getComputedStyle(g);
+                const lh = parseFloat(cs.lineHeight) || parseFloat(cs.fontSize) * 1.5;
+                return {
+                  bodyClass: document.body.className,
+                  pressDisplay: getComputedStyle(document.getElementById("press")).display,
+                  guidance: g.textContent,
+                  guidanceLines: Math.round(g.getBoundingClientRect().height / lh) };})()''')
 
             # resize the window: the layout must respond, not need a zoom slider
             #
@@ -230,10 +350,19 @@ def main() -> int:
             OUT["dense_cells"] = js("document.querySelectorAll('#grid .cell').length")
             OUT["dense_rail_gap"] = js(
                 "getComputedStyle(document.getElementById('grid')).gap")
+            # Expand the telemetry first: the whole point of this measurement is
+            # that right-aligned values survive a dense rail, and a folded row has
+            # no box at all -- `getBoundingClientRect().right` is 0 for it, which
+            # satisfies `<= innerWidth` no matter how badly the layout breaks.
+            js('if (!document.body.classList.contains("meter-open"))'
+               ' document.getElementById("meter-toggle").click()')
+            time.sleep(0.3)
             OUT["dense_metric_values"] = js(
-                "[...document.querySelectorAll('.m b')].filter(e => e.getBoundingClientRect().right"
-                " <= innerWidth + 1).length")
+                "[...document.querySelectorAll('.m b')].filter(e => {const r = e.getBoundingClientRect();"
+                " return r.width > 0 && r.right > 0 && r.right <= innerWidth + 1;}).length")
             OUT["dense_metric_count"] = js("document.querySelectorAll('.m b').length")
+            OUT["dense_metric_visible"] = js(
+                "[...document.querySelectorAll('.m b')].filter(e => e.getBoundingClientRect().width > 0).length")
         except Exception as exc:
             OUT["error"] = f"{type(exc).__name__}: {exc}"
         finally:
@@ -287,6 +416,75 @@ def main() -> int:
           f"clock={ck.get('w')}x{ck.get('h')} viewport={c.get('vw')}x{c.get('vh')}")
     check("beat grid built", (OUT.get("cells") or 0) > 0, f"{OUT.get('cells')} cells")
     check("press button labelled", bool(OUT.get("press_label")), str(OUT.get("press_label") or ""))
+
+    # ---- the hierarchy: the instruction is the content, the clock is its timebase
+    hi = OUT.get("hierarchy") or {}
+    check("the instruction is large enough to be the thing you read",
+          hi.get("fontPx", 0) >= 19,
+          f"instruction={hi.get('fontPx')}px clock={hi.get('clockFontPx')}px")
+    check("the instruction keeps the author's line breaks",
+          hi.get("whiteSpace") == "pre-line", str(hi.get("whiteSpace")))
+    tl = OUT.get("timeline") or {}
+    check("a multi-line timeline renders as multiple lines",
+          tl.get("lines", 0) >= 4, f"{tl.get('lines')} lines")
+    check("a multi-line timeline is not clipped", tl.get("clipped") is False,
+          f"clipped={tl.get('clipped')}")
+    # With a four-line timeline the digits must step back so the timeline reads
+    # first.  Asserted as a relationship, not a pixel count: the size has to stay
+    # responsive to the window (the vmin term), so only the *ratio* is a contract.
+    check("a multi-line timeline makes the countdown step back",
+          (tl.get("scale") or "1") != "1"
+          and tl.get("clockAfter", 1e9) < tl.get("clockBefore", 0) * 0.85,
+          f"scale={tl.get('scale')} clock {tl.get('clockBefore')}px -> {tl.get('clockAfter')}px")
+    check("the timeline still reads larger than a single line of it would",
+          (tl.get("instrFont") or 0) >= 19, f"instruction={tl.get('instrFont')}px")
+    # After GO the elapsed-seconds reading is a diagnostic: it must not stay the
+    # second-biggest thing on the card (measured before this: 40px, 37% of the
+    # countdown).
+    ct2 = OUT.get("clock_after_tail") or {}
+    check("the post-GO reading is demoted, not a second countdown",
+          (ct2.get("ratio") or 1) < 0.3,
+          f"tail={ct2.get('tail')}px countdown={ct2.get('countdown')}px "
+          f"ratio={round(ct2.get('ratio', 0), 3)}")
+
+    # ---- telemetry is folded away by default --------------------------
+    mf = OUT.get("meter_folded") or {}
+    check("telemetry is folded to one row by default",
+          mf.get("visible") == 1 and (mf.get("total") or 0) > 1,
+          f"{mf.get('visible')}/{mf.get('total')} rows, meter={mf.get('boxPx')}px")
+    check("telemetry fold is a real control, not a hover trick",
+          mf.get("toggle") is True and mf.get("expanded") == "false",
+          f"toggle={mf.get('toggle')} aria-expanded={mf.get('expanded')}")
+    me = OUT.get("meter_expanded") or {}
+    check("telemetry expands on demand",
+          me.get("visible", 0) == mf.get("total") and me.get("expanded") == "true",
+          f"{me.get('visible')} rows, aria-expanded={me.get('expanded')}")
+
+    # ---- a sensor-owned cue does not advertise a button ---------------
+    so = OUT.get("sensor_owned") or {}
+    check("a sensor-owned cue hides the press block entirely",
+          so.get("pressDisplay") == "none",
+          f"display={so.get('pressDisplay')} body={so.get('bodyClass')!r}")
+    # The guidance line must send the operator to the INSTRUCTION, must not tell
+    # them to press anything, and must name the observing channel in words a
+    # person reads -- `expect_source` is an enum (console_key, stdin_line, ...)
+    # and printing it verbatim put English snake_case on the one line a human
+    # reads from across a bench.  It also has to fit ONE line: the old wording
+    # wrapped to three and pushed the countdown down.
+    g = str(so.get("guidance") or "")
+    check("its guidance does not tell the operator to press the panel",
+          "按" not in g.replace("按键", ""), repr(g))
+    # The channel must be a HUMAN word, never the raw enum: `expect_source` is
+    # console_key / stdin_line / serial / ... and printing it verbatim put
+    # English snake_case on the one line a person reads from across a bench.
+    # Checked against the enum itself rather than a fixed word, because which
+    # source this cue uses is the test's choice, not a contract.
+    check("its guidance names the observing channel in human words",
+          any(w in g for w in ("控制台按键", "终端输入", "串口", "面板", "模拟源"))
+          and not any(e in g for e in ("console_key", "stdin_line", "serial", "http", "inject")),
+          repr(g))
+    check("its guidance fits one line",
+          (so.get("guidanceLines") or 0) == 1, f"{so.get('guidanceLines')} lines")
     ct = str(OUT.get("clock_text") or "")
     check("countdown shows a number (not '+' of nothing)", ct.isdigit() and len(ct) == 2,
           f"clock={ct!r} phase={OUT.get('phase_text')!r}")
@@ -342,8 +540,10 @@ def main() -> int:
     # are the first thing to disappear when the card overflows.
     check("every metric value is still on screen with a dense rail",
           OUT.get("dense_metric_values", 0) == OUT.get("dense_metric_count", -1)
-          and bool(OUT.get("dense_metric_count")),
-          f"{OUT.get('dense_metric_values')}/{OUT.get('dense_metric_count')} values inside the window")
+          and bool(OUT.get("dense_metric_count"))
+          and OUT.get("dense_metric_visible", 0) == OUT.get("dense_metric_count", -1),
+          f"{OUT.get('dense_metric_values')}/{OUT.get('dense_metric_count')} values inside the window "
+          f"({OUT.get('dense_metric_visible')} rendered)")
     if OUT.get("error"):
         check("no runtime errors", False, OUT["error"])
 

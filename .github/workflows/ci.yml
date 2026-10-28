@@ -188,6 +188,12 @@ jobs:
           # different program; rc=124 names the suite that stopped answering.
           python scripts/with_deadline.py 600 python scripts/e2e_window.py
           python scripts/with_deadline.py 600 python scripts/e2e_ui_layout.py
+          # The panel's *reading order*: what it says, at what size, and whether
+          # the instruction outranks the chrome.  A separate claim from geometry,
+          # and the one that let the original hierarchy inversion ship -- every
+          # existence and overflow assertion passed while the sentence the
+          # component exists to deliver was the least prominent text on the card.
+          python scripts/with_deadline.py 600 python scripts/audit_panel.py
           python scripts/with_deadline.py 600 python scripts/e2e_theme_drag.py
           python scripts/with_deadline.py 600 python scripts/e2e_split_mode.py
           python scripts/with_deadline.py 600 python scripts/e2e_daemon_window.py
