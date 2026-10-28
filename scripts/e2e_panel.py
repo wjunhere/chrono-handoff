@@ -16,6 +16,7 @@ import re
 import sys
 import threading
 import time
+from typing import Any
 import urllib.error
 import urllib.request
 from pathlib import Path
@@ -488,8 +489,14 @@ def main() -> int:
         # measured 12.0 s between two cues whose target was 2 s, because
         # `duration_s=10` was still running down (and `chrono_cue` defaults it to
         # 30, so a real chain would idle for half a minute per segment).
-        chained = dict(target_in_s=1.0, lead_s=0.4, ioi_ms=200, tail_beats=2,
-                       expect_source="none", duration_s=30, open_panel=False)
+        # Typed as Any on purpose: `**kwargs` unpacking of a heterogeneous dict
+        # cannot be narrowed to `cue()`'s parameters, and the type checker is
+        # right to refuse it -- the annotation is what makes the intent ("the
+        # same arguments for both") explicit instead of inferred from values.
+        chained: dict[str, Any] = dict(
+            target_in_s=1.0, lead_s=0.4, ioi_ms=200, tail_beats=2,
+            expect_source="none", duration_s=30, open_panel=False,
+        )
         first = conductor.cue(instruction="A: chained", **chained)
         second = conductor.cue(instruction="B: chained", **chained)
         gap = None

@@ -27,6 +27,7 @@ import json
 import os
 import sys
 import time
+from typing import Any
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
@@ -42,24 +43,39 @@ FAILURES: list[str] = []
 OUT: dict = {}
 
 
-def _window_icon_matches(ico_path: Path, title: str = "chrono-handoff") -> bool | str:
-    """Does the live window's icon bitmap equal the committed .ico's?
+def _icon_evidence(ico_path: Path, title: str = "chrono-handoff") -> dict[str, Any]:
+    """How close is the live window's icon to `icon.ico`, and to the host's icon?
 
-    Compared as *pixels*, not handles: Windows hands out a fresh HICON for the
-    same image, so equal handles would prove nothing and unequal ones prove
-    nothing either.  The .ico is decoded through the shell (`LoadImage` with
-    LR_LOADFROMFILE) so the comparison is against the file we ship.
+    Compared as *pictures*, not handles (Windows hands out a fresh HICON for the
+    same image, so handles prove nothing), and with a tolerance: the big icon a
+    window actually carries depends on the desktop's DPI, so an exact byte
+    comparison against the 48x48 entry passed here and failed on a runner at
+    100% -- the same image arrives resampled.  So each pair is drawn at
+    16/32/48/64 and scored by the fraction of pixels whose colour differs by more
+    than 48/255; the best size wins.
 
-    Returns a string on any inability to measure, so a skip is visibly a skip.
+    Measured on this machine: with `icon=` in place our mark scores 0.00-0.02
+    against `icon.ico`; with `icon=` dropped (the old behaviour) the window shows
+    the interpreter's mark and scores 0.66 -- and CI runs at 100% DPI, where the
+    exact-bytes version of this check failed because the same image arrived
+    resampled.  Hence the tolerance and the size sweep.
+
+    Returns ``{"ours": float|None, "host": float|None, "note": str}``; a ``None``
+    is "could not measure" and is reported as a skip, never as a pass.  ``host``
+    is often ``None`` on a venv: its `python.exe` is a stub with no icon resource,
+    so there is nothing to compare against (the ``ours`` claim is unaffected).
     """
+    out: dict[str, Any] = {"ours": None, "host": None, "host_exe": Path(sys.executable).name, "note": ""}
     if sys.platform != "win32":
-        return "not windows"
+        out["note"] = "not windows"
+        return out
     try:
         import ctypes
         from ctypes import wintypes
 
         user32 = ctypes.WinDLL("user32", use_last_error=True)
         gdi32 = ctypes.WinDLL("gdi32", use_last_error=True)
+        shell32 = ctypes.WinDLL("shell32", use_last_error=True)
         user32.FindWindowW.argtypes = [wintypes.LPCWSTR, wintypes.LPCWSTR]
         user32.FindWindowW.restype = wintypes.HWND
         user32.SendMessageW.argtypes = [wintypes.HWND, wintypes.UINT, wintypes.WPARAM, wintypes.LPARAM]
@@ -72,6 +88,9 @@ def _window_icon_matches(ico_path: Path, title: str = "chrono-handoff") -> bool 
         user32.DrawIconEx.argtypes = [wintypes.HDC, ctypes.c_int, ctypes.c_int, wintypes.HICON,
                                       ctypes.c_int, ctypes.c_int, wintypes.UINT, wintypes.HBRUSH,
                                       wintypes.UINT]
+        user32.LoadImageW.argtypes = [wintypes.HINSTANCE, wintypes.LPCWSTR, wintypes.UINT,
+                                      ctypes.c_int, ctypes.c_int, wintypes.UINT]
+        user32.LoadImageW.restype = ctypes.c_void_p
         gdi32.CreateCompatibleDC.argtypes = [wintypes.HDC]
         gdi32.CreateCompatibleDC.restype = wintypes.HDC
         gdi32.CreateDIBSection.argtypes = [wintypes.HDC, ctypes.c_void_p, wintypes.UINT,
@@ -80,9 +99,9 @@ def _window_icon_matches(ico_path: Path, title: str = "chrono-handoff") -> bool 
         gdi32.CreateDIBSection.restype = wintypes.HBITMAP
         gdi32.SelectObject.argtypes = [wintypes.HDC, wintypes.HANDLE]
         gdi32.DeleteDC.argtypes = [wintypes.HDC]
-        user32.LoadImageW.argtypes = [wintypes.HINSTANCE, wintypes.LPCWSTR, wintypes.UINT,
-                                      ctypes.c_int, ctypes.c_int, wintypes.UINT]
-        user32.LoadImageW.restype = ctypes.c_void_p
+        shell32.ExtractIconExW.argtypes = [wintypes.LPCWSTR, ctypes.c_int,
+                                           ctypes.POINTER(wintypes.HICON),
+                                           ctypes.POINTER(wintypes.HICON), wintypes.UINT]
 
         class BMIH(ctypes.Structure):
             _fields_ = [("biSize", wintypes.DWORD), ("biWidth", wintypes.LONG),
@@ -92,7 +111,7 @@ def _window_icon_matches(ico_path: Path, title: str = "chrono-handoff") -> bool 
                         ("biYPelsPerMeter", wintypes.LONG), ("biClrUsed", wintypes.DWORD),
                         ("biClrImportant", wintypes.DWORD)]
 
-        def bitmap(hicon: int, size: int = 48) -> bytes | None:
+        def bitmap(hicon: int | None, size: int) -> bytes | None:
             if not hicon:
                 return None
             hdc = user32.GetDC(None)
@@ -110,17 +129,39 @@ def _window_icon_matches(ico_path: Path, title: str = "chrono-handoff") -> bool 
             user32.ReleaseDC(None, hdc)
             return raw
 
+        def differs(a: bytes, b: bytes, tol: int = 48) -> float:
+            bad = 0
+            for i in range(0, len(a), 4):
+                if max(abs(a[i] - b[i]), abs(a[i + 1] - b[i + 1]), abs(a[i + 2] - b[i + 2])) > tol:
+                    bad += 1
+            return bad / (len(a) / 4)
+
         hwnd = user32.FindWindowW(None, title)
         if not hwnd:
-            return "no window"
+            out["note"] = "no window"
+            return out
         live = user32.SendMessageW(hwnd, 0x007F, 1, 0) or user32.GetClassLongPtrW(hwnd, -14)
-        want = user32.LoadImageW(None, str(ico_path), 1, 48, 48, 0x10)   # IMAGE_ICON, LR_LOADFROMFILE
-        a, b = bitmap(live), bitmap(want)
-        if a is None or b is None:
-            return "no icon handle"
-        return a == b
+        if not live:
+            out["note"] = "window has no icon handle"
+            return out
+        large, small = wintypes.HICON(), wintypes.HICON()
+        shell32.ExtractIconExW(sys.executable, 0, ctypes.byref(large), ctypes.byref(small), 1)
+
+        ours: list[float] = []
+        host: list[float] = []
+        for size in (16, 32, 48, 64):
+            drawn = bitmap(live, size)
+            want = bitmap(user32.LoadImageW(None, str(ico_path), 1, size, size, 0x10), size)
+            theirs = bitmap(large.value, size)
+            if drawn and want:
+                ours.append(differs(drawn, want))
+            if drawn and theirs:
+                host.append(differs(drawn, theirs))
+        out["ours"] = min(ours) if ours else None
+        out["host"] = min(host) if host else None
     except Exception as exc:
-        return f"{type(exc).__name__}: {exc}"
+        out["note"] = f"{type(exc).__name__}: {exc}"
+    return out
 
 
 def check(name: str, ok: bool, detail: str = "") -> None:
@@ -236,7 +277,7 @@ def main() -> int:
             # showed the app's own mark.  Read the window's icon handle and
             # compare its pixels with the committed .ico -- a handle comparison
             # would prove nothing (Windows hands out a new one per request).
-            OUT["taskbar_icon"] = _window_icon_matches(ICON_ICO_PATH)
+            OUT["taskbar_icon"] = _icon_evidence(ICON_ICO_PATH)
         except Exception as exc:
             OUT["error"] = f"{type(exc).__name__}: {exc}"
         finally:
@@ -251,9 +292,24 @@ def main() -> int:
     print(json.dumps(OUT, ensure_ascii=False, indent=2, default=str))
     print()
     check("shell layout activated", "shell" in str(OUT.get("body_class", "")), f"body.class={OUT.get('body_class')!r}")
-    check("the window carries the app's own taskbar icon",
-          OUT.get("taskbar_icon") is True,
-          f"icon={OUT.get('taskbar_icon')} (source: {ICON_ICO_PATH.name})")
+    icon_ev = OUT.get("taskbar_icon") or {}
+    ours, host = icon_ev.get("ours"), icon_ev.get("host")
+    if isinstance(ours, float):
+        check("the window carries the app's own taskbar icon",
+              ours <= 0.05,
+              f"{ours:.3f} of pixels differ from {ICON_ICO_PATH.name} (need <= 0.05)")
+        if isinstance(host, float):
+            check("...and not the interpreter's icon",
+                  host >= 0.20,
+                  f"{host:.3f} of pixels differ from {icon_ev.get('host_exe')} (need >= 0.20)")
+        else:
+            # A venv's python.exe is a launcher stub with no icon resource, so
+            # the comparison has nothing to compare against -- say so instead of
+            # turning an unmeasurable thing into a pass.
+            print(f"  [INFO] host icon not comparable: {icon_ev.get('host_exe')} carries no icon",
+                  flush=True)
+    else:
+        print(f"  [SKIP] taskbar icon: {icon_ev.get('note') or 'could not measure'}", flush=True)
     check("custom title bar is visible", OUT.get("titlebar_display") == "flex", f"display={OUT.get('titlebar_display')}")
     check("settings overlay exists", OUT.get("settings_overlay") is True)
     check("JS bridge available", OUT.get("bridge_available") is True)
