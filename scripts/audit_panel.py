@@ -210,15 +210,29 @@ def wait_for_cue(js: Any, run_id: str, timeout: float = 30.0) -> bool:
     * the phase line says "距 GO" -- the digits are counting DOWN.  A digit on
       screen is not enough: `#clock` shows "准备" during the lead-in and its size
       is a different clamp (58px), so "a digit exists" can be satisfied by the
-      wrong phase.  Measured as an intermittent failure of the "countdown steps
-      back" verdict, which compares this sample against the next one.
+      wrong phase.
+
+    ...and the whole condition must hold **twice, a frame apart**.  `applySchedule`
+    sets `S.runId`/`S.sched` immediately but the phase text is only repainted by
+    the next `tick()`, so for one frame the page carries the *previous* cue's
+    "距 GO" -- which satisfies the three conditions above while the new cue is
+    still in its lead-in.  That is not theory: on CI this audit recorded
+    `timeline='clock ready'/'准备'` and failed two verdicts with messages that
+    pointed at the layout.  A stable second reading is what makes the sample
+    provably this run's paint rather than the last one's.
     """
-    return wait_for(
-        js,
+    expr = (
         f'(S.runId === {json.dumps(run_id)} && !!S.sched'
-        ' && document.getElementById("phase").textContent.indexOf("距 GO") >= 0)',
-        timeout,
+        ' && document.getElementById("phase").textContent.indexOf("距 GO") >= 0)'
     )
+    end = time.time() + timeout
+    while time.time() < end:
+        if wait_for(js, expr, max(0.1, end - time.time())):
+            time.sleep(0.15)          # ~2 frames: let tick() repaint
+            if js(expr):
+                return True
+        time.sleep(0.08)
+    return False
 
 
 def main(argv: list[str]) -> int:
@@ -256,9 +270,20 @@ def main(argv: list[str]) -> int:
         "a digit exists" is satisfied by stale state -- the exact reason an
         earlier version of this audit measured 58px on one run and 107px on the
         next with no code difference.
+
+        The wait's result is **asserted**, not ignored.  It used to be discarded,
+        so a phase that never settled was still sampled: on CI the timeline phase
+        recorded `clock ready / '准备'` (the lead-in, 58px, wrong clamp) and the
+        two verdicts that compare this sample with the previous one failed with a
+        message that pointed at the layout.  A timeout is a failed measurement and
+        has to say so.
         """
         run = cue(**kw)
-        wait_for_cue(js, run["run_id"], 30)
+        if not wait_for_cue(js, run["run_id"], 30):
+            raise AssertionError(
+                f"the page never reached {run['run_id']}'s countdown: "
+                f"runId={js('S.runId')!r} phase={js('document.getElementById(\"phase\").textContent')!r}"
+            )
         return run
 
     def ready(w: Any) -> None:
