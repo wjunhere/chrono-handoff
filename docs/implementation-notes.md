@@ -393,3 +393,6 @@ python -m chrono_handoff.cli probe --trials 30 --conditions both,visual
 - `focus_window()` 用 `AttachThreadInput` 解开前台锁；
 - `synthetic_input_works()` 在断言前**先探测**输入能否送达；
 - 送不到时**显式 SKIP 并告警**，而不是把没测的东西报成全通过。
+
+这类"假失败"还有另外三种（尺寸/DPI、一帧滞后、环境残渣），具体形态、判据写法与
+校准流程见 [`testing.md`](testing.md)。
