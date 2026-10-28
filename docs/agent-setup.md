@@ -221,6 +221,15 @@ agent 看得到每个字段的说明与默认值，不需要额外包一层 `arg
 所以连续多段提醒的间隔由 `target_in_s` + `tail_beats × ioi_ms` 决定，而不是预算。
 想要「每段固定间隔」，就让各段的目标时刻递推：第 n 段 `target_in_s = 上一段时长 + 间隔`。
 
+### 墙钟锚定：`target_at_wall`
+
+需要“在 10:00:00 那一刻”而不是“提交后 N 秒”时，传 `target_at_wall`（epoch 秒）。
+它在网格开始时才换算，所以排队不会把它推后；那一刻在排队期间过去了，这条 run 以
+`status: "error"` / `verdict: "missed"` 结束——**不会报 ok**。
+
+CLI 侧同样有：`chrono submit -f plan.json` 里写 `"target_at_wall"`；
+`--paused` 登记后用 `chrono go <run_id>` 启动（以前只能用面板的「立即开始」）。
+
 ### `expect_source`：默认只提醒
 
 | 值 | 谁在观测 | 面板上有什么 |
@@ -240,6 +249,7 @@ agent 看得到每个字段的说明与默认值，不需要额外包一层 `arg
 | `timeout` + 这条 run 等信号 | `signal_missing` | 人没做，或没被观测到 |
 | `timeout` + 这条 run 不等信号 | `ok` | 提示期正常结束——**这是成功** |
 | `partial` | `unverified` | 收到信号但未确认生效 |
+| `error` + `deadline_missed` | `missed` | 墙钟目标在排队期间已过去，这条 cue 根本没播 |
 | `aborted` | `cancelled` | 被取消 |
 
 一个不要求人做可观测动作的 cue 到期会记成 `status: "timeout"`，那只是状态机
@@ -298,7 +308,7 @@ agent 看得到每个字段的说明与默认值，不需要额外包一层 `arg
 
 ```bash
 chrono selftest                 # 机制自检（10 项）
-python scripts/e2e_panel.py     # 面板 HTTP 全链路（59 项）
+python scripts/e2e_panel.py     # 面板 HTTP 全链路（65 项）
 python scripts/e2e_window.py    # 原生窗口（17 项）
 python scripts/e2e_ui_layout.py # 布局几何 + 界面层级（40 项）
 python scripts/audit_panel.py   # 界面读数审计：字号/行数/占比（20 项）

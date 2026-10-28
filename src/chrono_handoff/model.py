@@ -127,7 +127,17 @@ class CuePlan:
     # ---- when the physical action should land ----------------------------
     #: Absolute monotonic instant the *physical action* should land at.
     #: If None, it is derived from ``target_in_s`` relative to cue start.
+    #: Internal: no out-of-process caller can compute our monotonic base, and a
+    #: wall-clock value here is silently treated as an instant ~57 years away.
+    #: ``submit`` refuses such a value; agents use ``target_at_wall``.
     target_at: float | None = None
+    #: Absolute **wall-clock** instant (epoch seconds) the physical action should
+    #: land at.  This is the one a caller can express: "at 10:00:00, do X".
+    #: Resolved against the wall clock when the grid is *armed*, so a queued cue
+    #: keeps the instant it asked for instead of sliding by however long it
+    #: waited -- and a cue whose instant passed while it waited ends
+    #: ``verdict: "missed"`` instead of quietly arming an empty grid.
+    target_at_wall: float | None = None
     target_in_s: float | None = None
     #: Predicted human offset, seconds.  Measured (signal - cue_zero) last
     #: time.  Positive = human fires late.  The cue zero beat is scheduled at

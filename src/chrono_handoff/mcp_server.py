@@ -200,6 +200,15 @@ def tool_submit(
     target_in_s: Annotated[
         float | None, Field(description="Seconds from cue start at which the PHYSICAL action should land.")
     ] = None,
+    target_at_wall: Annotated[
+        float | None,
+        Field(
+            description="Absolute wall-clock instant (epoch SECONDS) the action should land at, for a cue that "
+            "must hit a clock time rather than an offset. Overrides target_in_s and survives queueing: if the "
+            "instant passes while the cue is still waiting its turn, the run ends verdict 'missed' (it never "
+            "reports ok for a cue nobody saw)."
+        ),
+    ] = None,
     lead_s: Annotated[float, Field(description="Countdown length before the GO beat (default 3).")] = 3.0,
     ioi_ms: Annotated[
         float, Field(description="Beat interval in ms (default 500). ~500ms lets humans anticipate rather than react.")
@@ -253,6 +262,7 @@ def tool_submit(
         {
             "instruction": instruction,
             "target_in_s": target_in_s,
+            "target_at_wall": target_at_wall,
             "lead_s": lead_s,
             "ioi_ms": ioi_ms,
             "tail_beats": tail_beats,
@@ -324,6 +334,13 @@ def tool_cue(
     target_in_s: Annotated[
         float, Field(description="Seconds from now until the physical action should happen (default 6).")
     ] = 6.0,
+    target_at_wall: Annotated[
+        float | None,
+        Field(
+            description="Absolute wall-clock instant (epoch SECONDS) instead of target_in_s, for a cue that must "
+            "hit a clock time. A cue still queued when that instant passes ends verdict 'missed', never 'ok'."
+        ),
+    ] = None,
     lead_s: Annotated[float, Field(description="Countdown length before the GO beat (default 3).")] = 3.0,
     ioi_ms: Annotated[float, Field(description="Beat interval ms (default 500).")] = 500.0,
     tail_beats: Annotated[
@@ -379,6 +396,8 @@ def tool_cue(
     }
     if expect_source is not None:
         params["expect_source"] = expect_source
+    if target_at_wall is not None:
+        params["target_at_wall"] = target_at_wall
     if run_id:
         params["run_id"] = run_id
     return _client().call("cue", **params)
@@ -795,6 +814,9 @@ INSTRUCTIONS = (
     "starts by itself when that one finishes (queue=false to run alongside). "
     "The cue reminds a person of WHAT to do and WHEN; it is not a button prompt, "
     "and by default nothing is recorded about the human. "
+    "For a cue that must land on a clock time, pass target_at_wall (epoch seconds) "
+    "instead of target_in_s; one whose instant passes while still queued ends "
+    "verdict 'missed', never 'ok'. "
     "Read `verdict`, not `status`, to decide whether a run went to plan: a cue "
     "that expected no signal ends `status: timeout` with `verdict: ok`. "
     "Keyword families: countdown, timer, operator cue, human in the loop, "

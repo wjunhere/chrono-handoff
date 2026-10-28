@@ -25,6 +25,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 from chrono_handoff import CONTRACT_VERSION, __version__  # noqa: E402
 from chrono_handoff.conductor import Conductor  # noqa: E402
 from chrono_handoff.inputs import HttpSource  # noqa: E402
+from chrono_handoff.model import CuePlan  # noqa: E402
 from chrono_handoff.webui import CuePanel  # noqa: E402
 
 
@@ -515,6 +516,67 @@ def main() -> int:
               f"A status={conductor.status(first['run_id'])['status']} "
               f"behind={conductor.status(first['run_id']).get('queued_behind')}")
         conductor.cancel(second["run_id"], "e2e_cleanup")
+
+        # ---- 11h. a wall-clock target hits its instant, or reports a miss ----
+        #
+        # `target_at` is a MONOTONIC instant, which no out-of-process caller can
+        # compute -- so "at 10:00:00 do X" had no expressible form, and the field
+        # that looked like it accepted an epoch silently meant "57 years from
+        # now" (measured: 18 beats, `lead_s` ignored).  `target_at_wall` is epoch
+        # seconds, resolved when the grid is armed so queueing cannot slide it.
+        want = time.time() + 1.5
+        wall = conductor.cue(instruction="wall clock", lead_s=1.2, ioi_ms=200, tail_beats=2,
+                             expect_source="none", duration_s=6, open_panel=False,
+                             target_at_wall=want, queue=False)
+        snap_wall = conductor.status(wall["run_id"])
+        zero_wall = conductor.wall_at(snap_wall["zero_at_mono"])
+        check("a wall-clock target lands on that instant",
+              abs(zero_wall - want) < 0.05 and snap_wall["beats_total"] > 0,
+              f"target={want:.3f} zero={zero_wall:.3f} "
+              f"err={1000 * (zero_wall - want):+.2f}ms beats={snap_wall['beats_total']}")
+        conductor.cancel(wall["run_id"], "e2e_cleanup")
+
+        # An instant that has already gone is refused at submit rather than armed.
+        try:
+            conductor.cue(instruction="too late", lead_s=1.0, ioi_ms=200, duration_s=4,
+                          open_panel=False, target_at_wall=time.time() - 5.0)
+            past_refused = False
+        except ValueError:
+            past_refused = True
+        check("a wall-clock target in the past is refused at submit", past_refused)
+        # An epoch value in the MONOTONIC field must be named, not misread as an
+        # instant decades away.
+        try:
+            conductor.submit(CuePlan(id="epoch-in-mono", instruction="wrong field", lead_s=1.0,
+                                     ioi_ms=200, target_at=time.time() + 3.0, duration_s=4))
+            epoch_refused = False
+        except ValueError:
+            epoch_refused = True
+        check("an epoch value in the monotonic target_at is refused", epoch_refused)
+
+        # The case that used to report SUCCESS: the instant passes while the cue
+        # is still queued, so the grid would have been empty and the run ended
+        # `verdict: ok` -- a cue nobody saw, reported as having gone to plan.
+        hold = conductor.cue(instruction="holds the screen", target_in_s=2.0, lead_s=1.0,
+                             ioi_ms=200, tail_beats=15, expect_source="none", duration_s=20,
+                             open_panel=False, queue=False)
+        late = conductor.cue(instruction="will be too late", lead_s=2.0, ioi_ms=200,
+                             tail_beats=2, expect_source="none", duration_s=8,
+                             open_panel=False, target_at_wall=time.time() + 1.0)
+        missed: dict = {}
+        deadline = time.time() + 15.0
+        while time.time() < deadline:
+            missed = conductor.status(late["run_id"])
+            if missed["status"] not in ("pending", "running"):
+                break
+            time.sleep(0.1)
+        check("a cue whose instant passes while queued reports missed, never ok",
+              missed.get("verdict") == "missed" and missed.get("status") == "error",
+              f"status={missed.get('status')} verdict={missed.get('verdict')} "
+              f"reason={missed.get('verdict_reason')} beats={missed.get('beats_total')}")
+        check("...and it played no grid at all",
+              missed.get("beats_total") == 0, f"{missed.get('beats_total')} beats")
+        conductor.cancel(hold["run_id"], "e2e_cleanup")
 
 
         # ---- 12. the bind path must not ask DNS who we are --------------

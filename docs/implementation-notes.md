@@ -284,6 +284,7 @@ median + MAD + 单次步进夹紧（30ms）+ 总偏移夹紧（±300ms）共同�
 | 无 `paused` | `submit(paused=True)` + `go()` | 实验上必须：**由受试者自己启动倒计时**，与"被突然告知"不是同一种测量 |
 | 多条 cue 可同时提交 | 后到的默认 `PENDING` + `queued_behind`，前一条刺激结束时自动起拍 | 人只有一双眼睛；两条同时跑的 cue 是第二个把第一个顶掉，而不是两个提示 |
 | 状态名即结论 | `status`（状态机）+ `verdict`（结论） | 不要求信号的 cue 到期必为 `timeout`，那是它的成功终态；改名等于改契约 |
+| `target_at` 当对外接口 | 对外只收 `target_at_wall`（epoch 秒），`target_at` 留作内部单调时钟 | 进程外算不出我们的单调基准；塞 epoch 会被当成 57 年后，且错过绝对时刻曾报 `verdict: ok` |
 | MCP 工具手写 JSON Schema | 签名即 schema（`Annotated` + `Field`），`TOOLS` 只存 `fn` | `add_tool` 只能从签名推导 schema，手写的那份从未被发布 |
 | `expect_source=none` = 面板点击算证据 | `none` = 只提醒；`http`/`inject` 才是面板观测 | 一个值两套定义（`PANEL_OBSERVED_SOURCES` 与 `_verdict_for` 相反）；默认 cue 因此变成一个“请按我”的按钮 |
 | Two-Rate"缺计划时跟踪旧计划" | `HumanEffector.caps().repeatable = False` | "重放人类上一个动作"= 让人再按一次 RESET，语义完全不同 |

@@ -4,7 +4,7 @@
 > 场景：给嵌入式实验的板载 LED 拍实物照片，需要人在 6 个时刻依次按状态拍摄。
 > 平台：Windows 11 · CPython 3.14 · Git Bash · 通过 MCP（`chrono mcp`）调用。
 >
-> 本文只写**实际踩到的东西**，每条都带复现方式与根因定位。九个问题现在都已修掉，
+> 本文只写**实际踩到的东西**，每条都带复现方式与根因定位。十个问题现在都已修掉，
 > 每节末尾的「修法」写的是最终改动，而不是当时的绕行。
 
 ---
@@ -415,3 +415,49 @@ B 开始       A 之后 12.00s
 `e2e_panel` 新增两条：链式 cue 的间隔必须 < 4 s（`duration_s=30`，实测 1.6 s），
 以及“排在已终态但还在响的前驱后面不会被卡住”。两条在旧代码上都失败（实测
 `gap=None` / `status=pending`）。
+
+---
+
+## 问题 10 ★ 绝对时刻：错过了却报成功（已修）
+
+### 现象
+
+想做“10:00:00 那一刻拍照”，发现根本没有可用的入口：`CuePlan.target_at` 是
+**单调时钟**，进程外算不出来；MCP 工具签名里没有它，CLI 也没有参数。
+把它当墙钟用更糟——实测塞 epoch 值进去，它变成一个「57 年后」的时刻，
+`lead_s` 被完全忽略，网格生成了 18 拍。
+
+更严重的是排队场景。实测（`target_at` 用正确的单调单位，排在一段 7 s 的 cue 后面）：
+
+```
+B 的绝对时刻   +1s
+B 被释放       +7s，时刻已过去 6s
+→ 生成 0 拍、run_start 后立即 run_end
+→ status: timeout   verdict: ok   reason: cue_finished
+```
+
+**人一次提示都没看到，机器说“按计划结束”。** 假阳性比不执行更坏——调用方会据此
+认为那一步做完了。
+
+### 修法
+
+- 对外只收 `target_at_wall`（epoch 秒），在**网格真正开始时**换算成单调时刻，
+  所以排队不会把它推后（实测通过 MCP → daemon → 面板全链路，`zero_wall_ms` 与
+  目标差 0.00 ms）。
+- 两条 fast-fail：`target_at` 里塞 epoch（> 1e9）→ 提交时 `ValueError` 并提示改用
+  `target_at_wall`；`target_at_wall` 在提交时已经过去 → 同样 `ValueError`。
+- 那一刻在**排队期间**过去（提交时还合法）→ `status: error` / `verdict: missed` /
+  `reason: deadline_missed`，事件流里只有 `deadline_missed` 与 `run_end`，没有 `run_start`。
+- 面板的 `VERDICT_TEXT` 加了 `missed → 错过了`。
+
+### 顺带补齐的 CLI 口子
+
+- `chrono submit --no-queue`：以前 CLI 提交的 cue 永远排队（`queue` 只在 MCP 签名上），
+  同一份 plan 走两个入口行为不同。
+- `chrono go <run_id>`：IPC 早就有 `go`，CLI 没有，于是 `submit --paused` 之后只能用
+  面板的「立即开始」。
+
+### 回归
+
+`e2e_panel` 新增 4 条：墙钟目标必须落在那一刻（±50 ms，实测 0.00 ms）、过去的目标
+被拒、epoch 塞进 `target_at` 被拒、排队期间错过的目标必须 `verdict=missed` 且 0 拍。

@@ -132,7 +132,7 @@ sync_action({
 ```jsonc
 {
   "status": "satisfied",           // satisfied | timeout | aborted | partial
-  "verdict": "ok",                 // 结论：ok | signal_missing | unverified | cancelled | error
+  "verdict": "ok",                 // 结论：ok | signal_missing | unverified | cancelled | missed | error
   "verdict_reason": "verify",      // 内部原因（human_signal / no_signal / panel_cancel …）
   "t0": 1234567.890,               // 单调时钟基准
   "events": [
@@ -160,6 +160,20 @@ sync_action({
 **用法**：下一轮把 `offset_s = 上一轮 median(human_offset_ms)/1000` 提交，
 由于 `zero_at = target_at - offset_s`，cue 会朝反方向偏移，人机在 `target_at` 相遇。
 注意 offset 只移动**人类 cue**；机器动作始终锚在 `target_at`（`calibrate.py` 规则 5）。
+
+### 4.2.1 绝对时刻：`target_at` 是单调时钟，`target_at_wall` 是墙钟
+
+`target_at` 是 conductor 自己单调时钟上的瞬间——进程外的调用者算不出来，所以它只是内部字段，
+不是接口。agent 要用绝对时刻时传 `target_at_wall`（epoch 秒）：它在网格真正开始时才换算，
+所以**排队不会把它推后**。
+
+两条 fast-fail，而不是默默错：
+
+- `target_at` 里塞一个 epoch 值（> 1e9）→ 提交时 `ValueError`，提示改用 `target_at_wall`。
+  不拦的话它会变成一个「57 年后」的时刻，`lead_s` 被忽略，网格变成一堆没意义的拍子。
+- 那一刻在排队期间已经过去 → 这条 run 以 `status: error` / `verdict: missed` 结束。
+  修之前它会 arm 一个**空网格**、打一条 `run_start`、然后以 `verdict: ok` 收尾——
+  人一次提示都没看到，机器说按计划完成。
 
 ### 4.3 辅助接口
 
@@ -231,6 +245,7 @@ sync_cancel({ "id": "sync_001" })
 | `TIMEOUT` + 这条 run 等信号 | `signal_missing` | 人没做，或没被观测到——失败 |
 | `TIMEOUT` + 这条 run 不等信号 | `ok` | 提示期正常结束——成功 |
 | `PARTIAL` | `unverified` | 收到信号但未确认生效 |
+| `ERROR` + `deadline_missed` | `missed` | 墙钟目标在排队期间已过去，这条 cue 根本没播 |
 | `ABORTED` | `cancelled` | 被取消 |
 | `ERROR` | `error` | 内部故障 |
 

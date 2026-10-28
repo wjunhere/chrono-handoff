@@ -826,7 +826,18 @@ def cmd_submit(args: argparse.Namespace) -> int:
     # Same normalisation the MCP tools use, so `chrono submit -f plan.json` and
     # an agent tool call cannot disagree about the plan schema.
     plan = plan_from_dict(_load_plan(args))
-    res = _client(args).call("submit", plan=asdict(plan), paused=args.paused)
+    res = _client(args).call("submit", plan=asdict(plan), paused=args.paused, queue=args.queue)
+    _print_json(res)
+    return 0
+
+
+def cmd_go(args: argparse.Namespace) -> int:
+    """Start a run that was submitted with ``--paused``.
+
+    The IPC method existed all along; only the CLI did not, so a paused cue
+    submitted from a shell could be started from the panel and nowhere else.
+    """
+    res = _client(args).call("go", run_id=args.run_id, in_s=args.in_s)
     _print_json(res)
     return 0
 
@@ -1141,7 +1152,20 @@ def build_parser() -> argparse.ArgumentParser:
     sb.add_argument("-f", "--file", default=None)
     sb.add_argument("--json", default=None)
     sb.add_argument("--paused", action="store_true", help="register but do not start the clock")
-    sb.set_defaults(fn=cmd_submit)
+    sb.add_argument(
+        "--no-queue",
+        dest="queue",
+        action="store_false",
+        help="run alongside the cue already on screen instead of waiting for it "
+        "(the MCP tools have the same switch; without it the two entry points disagreed)",
+    )
+    sb.set_defaults(fn=cmd_submit, queue=True)
+
+    gs = sub.add_parser("go", help="start a submitted (paused) run")
+    net(gs)
+    gs.add_argument("run_id")
+    gs.add_argument("--in", dest="in_s", type=float, default=0.0, help="start this many seconds from now")
+    gs.set_defaults(fn=cmd_go)
 
     ob = sub.add_parser("observe", help="incremental journal read")
     net(ob)

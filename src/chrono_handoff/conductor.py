@@ -436,6 +436,19 @@ class Conductor:
             raise RuntimeError(
                 "this conductor is standing down for an update and is not accepting new cues"
             )
+        # Fail fast on the two ways an absolute target goes wrong, instead of
+        # letting them become a plausible-looking cue.
+        if plan.target_at is not None and plan.target_at > 1e9:
+            raise ValueError(
+                "target_at is a MONOTONIC instant on the conductor's own clock; "
+                f"{plan.target_at!r} looks like an epoch timestamp.  Pass target_at_wall "
+                "(epoch seconds) for a wall-clock deadline."
+            )
+        if plan.target_at_wall is not None and plan.target_at_wall <= time.time():
+            raise ValueError(
+                f"target_at_wall {plan.target_at_wall!r} is already in the past "
+                f"(now {time.time():.3f}): a cue cannot be anchored to an instant that has gone"
+            )
         if not plan.id:
             plan.id = f"run_{uuid.uuid4().hex[:8]}"
         run = Run(id=plan.id, plan=plan)
@@ -606,9 +619,27 @@ class Conductor:
         plan = run.plan
         run.origin = CLOCK()
 
-        target_in = plan.target_in_s
-        if target_in is None:
-            target_in = (plan.target_at - run.origin) if plan.target_at is not None else plan.lead_s + 1.0
+        if plan.target_at_wall is not None:
+            # Wall clock -> our monotonic base, resolved *now* (i.e. when the grid
+            # is armed, not when the cue was submitted): a queued cue keeps the
+            # instant it asked for instead of sliding by however long it waited.
+            target_in = plan.target_at_wall - time.time()
+            if target_in < 0:
+                # The instant passed while this cue was waiting for its turn.
+                # Fail loudly.  It used to arm an empty grid (every beat already
+                # in the past), fire `run_start`, and end `verdict: ok` -- a cue
+                # nobody ever saw, reported as having gone to plan.
+                self._emit(
+                    run, "deadline_missed",
+                    late_by_s=round(-target_in, 3),
+                    target_at_wall=plan.target_at_wall,
+                )
+                self._finalize(run, RunStatus.ERROR, reason="deadline_missed")
+                return
+        else:
+            target_in = plan.target_in_s
+            if target_in is None:
+                target_in = (plan.target_at - run.origin) if plan.target_at is not None else plan.lead_s + 1.0
         run.target_at = run.origin + target_in
         # The ONE place the human offset acts: it moves the zero beat only.
         run.zero_at = run.target_at - plan.offset_s
@@ -994,6 +1025,7 @@ class Conductor:
         visual: bool = True,
         duration_s: float = 30.0,
         expect_source: str | None = None,
+        target_at_wall: float | None = None,
         paused: bool = False,
         open_panel: bool = True,
         queue: bool = True,
@@ -1021,10 +1053,21 @@ class Conductor:
         to press a button.  Pass ``"http"`` when the panel itself should capture
         the moment, or a sensor source (``serial``, ``console_key``...) when the
         hardware is the evidence.
+
+        ``target_at_wall`` anchors the action to an absolute **wall-clock** instant
+        (epoch seconds) instead of ``target_in_s``.  It is resolved when the grid
+        is armed, so a queued cue still hits the instant it asked for -- and if
+        that instant passes while it waits, the run ends ``verdict: "missed"``
+        rather than playing an empty grid and reporting success.
         """
         if not instruction:
             raise ValueError("instruction is required")
-        if target_in_s is None:
+        if target_at_wall is not None:
+            # The wall-clock instant *is* the target.  Computing a `target_in_s` as
+            # well would be a second, contradictory answer to the same question
+            # (and a wrong one as soon as the cue is queued).
+            target_in_s = None
+        elif target_in_s is None:
             target_in_s = lead_s + 3.0
         source = expect_source or "none"
         plan = CuePlan(
@@ -1035,7 +1078,8 @@ class Conductor:
             tail_beats=int(tail_beats),
             audio=bool(audio),
             visual=bool(visual),
-            target_in_s=float(target_in_s),
+            target_in_s=None if target_in_s is None else float(target_in_s),
+            target_at_wall=target_at_wall,
             expect=SignalSpec(source=source, timeout_s=float(duration_s), min_offset_ms=-float(ioi_ms) / 2.0),
             duration_s=float(duration_s),
             # The cue IS the stimulus here, so it must outlive the response.
@@ -1421,6 +1465,11 @@ class Conductor:
         if status == RunStatus.ABORTED:
             return "cancelled", reason or "cancelled"
         if status == RunStatus.ERROR:
+            if reason == "deadline_missed":
+                # A wall-clock instant that passed while this cue was queued.  It
+                # gets its own verdict because "error" would hide the one thing
+                # the caller must know: the cue never happened.
+                return "missed", reason
             return "error", reason or "error"
         if status == RunStatus.PARTIAL:
             return "unverified", reason or "signal_seen_no_verify"

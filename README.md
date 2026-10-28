@@ -155,6 +155,11 @@ chrono_cue(
 `expect_source="http"`，面板才会多出那个可选的记录按钮；传传感器名（`serial`、
 `console_key`）则机器看硬件，不看面板。
 
+要锤在**墙钟某一刻**（例如 10:00:00），传 `target_at_wall`（epoch 秒）而不是
+`target_in_s`。它在网格真正开始时才换算，所以排队不会把它推后；如果那一刻在
+排队期间已经过去了，这条 run 以 `verdict: "missed"` / `status: "error"` 结束
+——**绝不会报 ok**。
+
 ### CLI
 
 | 命令 | 说明 |
@@ -163,7 +168,8 @@ chrono_cue(
 | `chrono selftest` | 无人工参与的机制自检 |
 | `chrono daemon` | 启动 conductor 常驻进程 |
 | `chrono window` | 原生提示窗口（`--attach` 作为纯显示器） |
-| `chrono submit` | 提交计划 |
+| `chrono submit` | 提交计划（`--paused` 只登记，`--no-queue` 与前一条并行） |
+| `chrono go` | 启动 `--paused` 登记的那条（`--in` 延迟启动） |
 | `chrono observe` / `status` / `wait` / `cancel` | 运行控制 |
 | `chrono verify` | 标记动作已确认生效 |
 | `chrono calibrate` | 人类偏移估计 |
@@ -308,7 +314,7 @@ Windows 11 / CPython 3.13，详见 [`docs/implementation-notes.md`](implementati
 | [`docs/m1.md`](docs/m1.md) | M1 测量实验方法 |
 | [`docs/theory.md`](docs/theory.md) | 理论依据（时间触发 / 人机节拍同步） |
 | [`docs/problem.md`](docs/problem.md) | 问题定义与量化 |
-| [`docs/usage-findings.md`](docs/usage-findings.md) | 实测踩坑记录（九个问题，均已有结论） |
+| [`docs/usage-findings.md`](docs/usage-findings.md) | 实测踩坑记录（十个问题，均已有结论） |
 | [`docs/related-work.md`](docs/related-work.md) | 相关项目调研 |
 | [`case-studies/loongson-2k1000.md`](case-studies/loongson-2k1000.md) | 实例：龙芯 2K1000LA PMON 引导窗口捕获 |
 
