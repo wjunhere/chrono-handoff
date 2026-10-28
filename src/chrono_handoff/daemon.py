@@ -263,10 +263,24 @@ def spawn_background(args: argparse.Namespace) -> int:
     cmd = [exe, "-m", "chrono_handoff.daemon", "--port", str(args.port), "--host", args.host, "--audio", args.audio]
     if args.journal_dir:
         cmd += ["--journal-dir", args.journal_dir]
-    if not args.visual:
+    # The attribute is ``no_visual`` (that is what the parser builds); reading
+    # ``args.visual`` here is what made every `chrono daemon --background` die
+    # with AttributeError before it ever spawned anything -- and `--background`
+    # is the start-up command `chrono doctor` recommends.
+    if args.no_visual:
         cmd += ["--no-visual"]
     if args.verbose:
         cmd += ["--verbose"]
+    # Every parsed option has to be forwarded, not just the ones that were easy
+    # to remember.  `--no-panel`, `--panel-port` and `--panel-open` used to be
+    # dropped here, so asking for a daemon with no panel still started one with
+    # a panel on 8790 -- and a second daemon then failed to bind it.
+    if args.no_panel:
+        cmd += ["--no-panel"]
+    if args.panel_port:
+        cmd += ["--panel-port", str(args.panel_port)]
+    if args.panel_open:
+        cmd += ["--panel-open"]
     if getattr(args, "window", False):
         cmd += ["--window"]
         if getattr(args, "no_on_top", False):
