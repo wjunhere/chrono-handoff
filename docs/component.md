@@ -300,6 +300,16 @@ python scripts/_shot_window.py chrono-handoff
 屏幕上永远只有一条 cue 在响。后到的 cue 由 conductor 记为 `PENDING` +
 `queued_behind`，不 arm、不占屏幕；前一条的**刺激**（不是 verdict）结束时自动 `go()`。
 
+两个细节值得单独记：
+
+- **段间隔看拍子，不看 `duration_s`。** 一条不观测人（`expect_source` 为 `none`）
+  且没有 `on_window`/`verify` 的 cue，在最后一个拍子落地就收尾——没有任何东西
+  会再到来，等预算就是纯静默。实测：`target_in_s=2, duration_s=10` 的两条 cue，
+  修前 B 在 A 后 **12.0 s** 才开始（中间 9.6 s 静默），修后 **2.6 s**。
+- **已终态但还在响的前驱不能成为死胡同。** 这种前驱不会再 `_finalize`，它当初
+  排的释放任务早于新 cue 存在，所以 `_wait_behind()` 在入队时自己补一次释放。
+  实测漏了这步时，一条 cue 会永远停在 `PENDING`。
+
 面板侧只需回答两个问题：
 
 - **现在该显示谁** —— `_pick_current()`：当前那条还活着就继续显示；它到终态而后面那条已被

@@ -217,6 +217,10 @@ agent 看得到每个字段的说明与默认值，不需要额外包一层 `arg
 人只有一双眼睛，两条同时跑的 cue 不是两个提示——第二个会把第一个从面板上顶掉。
 真正需要并行时（一人一条）传 `queue=false`。
 
+**段间隔看拍子，不看 `duration_s`。** 不观测人的 cue 在最后一个拍子落地就收尾，
+所以连续多段提醒的间隔由 `target_in_s` + `tail_beats × ioi_ms` 决定，而不是预算。
+想要「每段固定间隔」，就让各段的目标时刻递推：第 n 段 `target_in_s = 上一段时长 + 间隔`。
+
 ### `expect_source`：默认只提醒
 
 | 值 | 谁在观测 | 面板上有什么 |
@@ -294,7 +298,7 @@ agent 看得到每个字段的说明与默认值，不需要额外包一层 `arg
 
 ```bash
 chrono selftest                 # 机制自检（10 项）
-python scripts/e2e_panel.py     # 面板 HTTP 全链路（58 项）
+python scripts/e2e_panel.py     # 面板 HTTP 全链路（59 项）
 python scripts/e2e_window.py    # 原生窗口（17 项）
 python scripts/e2e_ui_layout.py # 布局几何 + 界面层级（40 项）
 python scripts/audit_panel.py   # 界面读数审计：字号/行数/占比（20 项）

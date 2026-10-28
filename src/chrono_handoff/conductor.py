@@ -501,11 +501,25 @@ class Conductor:
             plan.meta.setdefault("queue", bool(queue))
             behind = self._tail_run_id(exclude=run.id) if (queue and human_facing) else None
             if behind is not None:
-                run.queued_behind = behind
-                self._emit(run, "queued", behind=behind, reason="another cue is still running")
+                self._wait_behind(run, behind, "another cue is still running")
             else:
                 self.go(run.id)
         return run
+
+    def _wait_behind(self, run: Run, behind_id: str, reason: str) -> None:
+        """Register ``run`` as queued behind ``behind_id``, and arm its release.
+
+        The release normally comes from the predecessor's own ``_finalize``.  But
+        a predecessor that is **already terminal while its grid still pulses**
+        will never finalize again, and the job its finalize armed fired before
+        this run existed -- so nothing would ever look for it.  Measured: a cue
+        submitted just after another was cancelled sat ``PENDING`` forever.
+        """
+        run.queued_behind = behind_id
+        self._emit(run, "queued", behind=behind_id, reason=reason)
+        prev = self.runs.get(behind_id)
+        if prev is not None and prev.status in TERMINAL:
+            self._release_queue(prev)
 
     def _tail_run_id(self, exclude: str = "") -> str | None:
         """The last human-facing run that is still worth waiting for.
@@ -572,8 +586,7 @@ class Conductor:
         if (run.plan.audio or run.plan.visual) and run.plan.meta.get("queue", True):
             behind = self._tail_run_id(exclude=run.id)
             if behind is not None:
-                run.queued_behind = behind
-                self._emit(run, "queued", behind=behind, reason="start pressed while another cue is running")
+                self._wait_behind(run, behind, "start pressed while another cue is running")
                 return run
 
         def _start(_deadline: float) -> None:
@@ -843,12 +856,30 @@ class Conductor:
         Guarantees a terminal status even if the human walks away -- the
         "blocking wait" anti-pattern is not allowed to reappear as an
         unbounded run.
+
+        A cue that expects **no observable signal** and has no machine work left
+        after its grid is over when its last beat lands: nothing can arrive, so
+        waiting out ``duration_s`` is pure silence.  That silence used to land in
+        the *next* queued cue -- measured 12.0 s between two cues whose target was
+        2 s, because ``duration_s=10`` was still being waited out long after the
+        last beat (and ``chrono_cue`` defaults it to 30).  ``duration_s`` is the
+        budget for *waiting for a signal*, not a cap on the stimulus: cutting a
+        grid short because the budget is smaller would be worse than overrunning
+        it, so the grid wins when they disagree.
         """
         # The origin is stamped before a deadline can be computed; binding it to
         # a local keeps the arithmetic below free of Optional.
         assert run.origin is not None
         origin = run.origin
         plan = run.plan
+        observable = plan.expect is not None and plan.expect.source not in ("", "none")
+        if (
+            not observable
+            and plan.on_window is None
+            and plan.verify is None
+            and run.zero_at is not None
+        ):
+            return max(0.0, run.zero_at - origin + plan.tail_beats * plan.ioi_ms / 1000.0 + 0.2)
         need = [plan.duration_s]
         # The tail must be allowed to finish even if nothing else constrains it.
         if run.zero_at is not None:

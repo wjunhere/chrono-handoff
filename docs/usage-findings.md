@@ -4,7 +4,7 @@
 > 场景：给嵌入式实验的板载 LED 拍实物照片，需要人在 6 个时刻依次按状态拍摄。
 > 平台：Windows 11 · CPython 3.14 · Git Bash · 通过 MCP（`chrono mcp`）调用。
 >
-> 本文只写**实际踩到的东西**，每条都带复现方式与根因定位。八个问题现在都已修掉，
+> 本文只写**实际踩到的东西**，每条都带复现方式与根因定位。九个问题现在都已修掉，
 > 每节末尾的「修法」写的是最终改动，而不是当时的绕行。
 
 ---
@@ -372,3 +372,46 @@ clock        58 px   55 px 高   ← 倒计时
 `e2e_ui_layout.py` 新增 2 条；`e2e_panel.py` 新增「`none` 下的点击不算证据、但仍入日志」。
 `e2e_panel_attach` / `e2e_window` / `e2e_desktop_shell` 的 press 用例从 `none` 改成 `http`
 ——它们测的是记录路径，不是默认语义。
+
+---
+
+## 问题 9 ★ 连续多段提醒：段间隔被 `duration_s` 拉长（已修）
+
+### 现象
+
+要「6 秒后做 A，再过 8 秒做 B」，把两条 cue 连着提交。第二段确实排队了，但中间
+静默了很久。实测（`target_in_s=2, duration_s=10, tail 2 拍`）：
+
+```
+A 的拍子     +2.4s 播完
+A 到终态     +12.0s  ← 空等 9.6 s
+B 开始       A 之后 12.00s
+```
+
+### 根因
+
+`_effective_deadline()` 取 `max(duration_s, zero+tail, zero+expect.timeout_s)`，
+而 `cue()` 把 `expect.timeout_s` 也设成 `duration_s`。于是一条**不观测人**的 cue，
+在拍子早就播完后仍要挂到预算用完，而释放下一段的条件是“前驱收尾”。
+`chrono_cue` 的 `duration_s` 默认 30，所以照默认写就是每段多静默半分钟。
+
+### 顺带查出的死胡同
+
+修的过程中，`e2e_panel` 里新加的两段链式 cue 一直不启动（`gap=None`）。原因不是间隔，
+而是**前驱已终态但还在响**：这种 run 不会再 `_finalize`，而它当初排的释放任务
+早于新 cue 存在——于是新 cue 永远 `PENDING`。`_wait_behind()` 现在在入队时
+自己补一次 `_release_queue()`。
+
+### 修法
+
+- 不观测人（`expect_source` 为 `none`）且无 `on_window`/`verify` 的 cue，deadline 就
+  是**最后一个拍子落地 + 0.2 s**，`duration_s` 不再参与。注意这里**不是** `min()`：
+  网格本身比预算长时，宁可超预算也不能把网格砍掉。
+- `_wait_behind()` 统一处理入队：记 `queued_behind`、发 `queued` 事件、若前驱已终态
+  则立即尝试释放。`submit()` 和 `go()` 两条路径都走它。
+
+### 回归
+
+`e2e_panel` 新增两条：链式 cue 的间隔必须 < 4 s（`duration_s=30`，实测 1.6 s），
+以及“排在已终态但还在响的前驱后面不会被卡住”。两条在旧代码上都失败（实测
+`gap=None` / `status=pending`）。

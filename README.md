@@ -144,8 +144,9 @@ chrono_cue(
 
 参数直接写在工具签名上，agent 看得到全部字段与默认值。
 **一次只响一条**：如果屏幕上还有一条 cue 没跑完，新的会排在它后面，
-等前一条的拍子播完自动开始（`queue=false` 可关掉）。人只有一双眼睛，
+等前一条的**拍子**播完自动开始（`queue=false` 可关掉）。人只有一双眼睛，
 两条同时跑的 cue 不是两个提示，而是第二个把第一个顶掉。
+段间隔看拍子不看预算：不观测人的 cue 在最后一个拍子落地就收尾，不会干等 `duration_s`。
 
 返回值里 `status` 是状态机、`verdict` 是结论。`verdict: "ok"` 才是“按计划结束”——
 一个不要求人做可观测动作的 cue 到期会记成 `status: "timeout"`，那是它的**成功**终态。
@@ -307,7 +308,7 @@ Windows 11 / CPython 3.13，详见 [`docs/implementation-notes.md`](implementati
 | [`docs/m1.md`](docs/m1.md) | M1 测量实验方法 |
 | [`docs/theory.md`](docs/theory.md) | 理论依据（时间触发 / 人机节拍同步） |
 | [`docs/problem.md`](docs/problem.md) | 问题定义与量化 |
-| [`docs/usage-findings.md`](docs/usage-findings.md) | 实测踩坑记录（八个问题，均已有结论） |
+| [`docs/usage-findings.md`](docs/usage-findings.md) | 实测踩坑记录（九个问题，均已有结论） |
 | [`docs/related-work.md`](docs/related-work.md) | 相关项目调研 |
 | [`case-studies/loongson-2k1000.md`](case-studies/loongson-2k1000.md) | 实例：龙芯 2K1000LA PMON 引导窗口捕获 |
 

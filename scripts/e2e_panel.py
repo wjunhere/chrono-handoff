@@ -477,6 +477,44 @@ def main() -> int:
               any(e.kind == "panel_press_not_evidence" for e in conductor.events(rem["run_id"])),
               f"{len(conductor.events(rem['run_id']))} events")
         conductor.cancel(rem["run_id"], "e2e_cleanup")
+        time.sleep(0.6)          # let its tail land, so it is no longer a predecessor
+
+        # ---- 11g. a chained cue starts when the GRID ends, not when the budget does
+        #
+        # A cue that expects no observable signal has nothing left to wait for once
+        # its last beat has landed, so it must end there -- not sit out
+        # `duration_s`.  That silence used to land in the *next* queued cue:
+        # measured 12.0 s between two cues whose target was 2 s, because
+        # `duration_s=10` was still running down (and `chrono_cue` defaults it to
+        # 30, so a real chain would idle for half a minute per segment).
+        chained = dict(target_in_s=1.0, lead_s=0.4, ioi_ms=200, tail_beats=2,
+                       expect_source="none", duration_s=30, open_panel=False)
+        first = conductor.cue(instruction="A: chained", **chained)
+        second = conductor.cue(instruction="B: chained", **chained)
+        gap = None
+        deadline = time.time() + 12.0
+        while time.time() < deadline:
+            sa = conductor.status(first["run_id"])
+            sb = conductor.status(second["run_id"])
+            if sa.get("origin_mono") and sb.get("origin_mono"):
+                gap = sb["origin_mono"] - sa["origin_mono"]
+                break
+            time.sleep(0.05)
+        check("the next chained cue starts when the grid ends, not when the budget does",
+              gap is not None and gap < 4.0,
+              f"B started {gap if gap is None else round(gap, 2)}s after A "
+              f"(grid ends +1.4s, duration_s=30)")
+        # `A` itself was submitted while the *cancelled* cue above was still
+        # pulsing, so it queued behind a run that will never finalize again.  That
+        # used to strand it in PENDING forever: the release job such a run arms
+        # fires at the end of ITS grid, which is before this run existed.  If A
+        # never started, `gap` is None -- this names the failure instead of
+        # leaving it to the timing assertion.
+        check("...and a cue queued behind a cancelled-but-pulsing cue is not stranded",
+              bool(conductor.status(first["run_id"]).get("origin_mono")),
+              f"A status={conductor.status(first['run_id'])['status']} "
+              f"behind={conductor.status(first['run_id']).get('queued_behind')}")
+        conductor.cancel(second["run_id"], "e2e_cleanup")
 
 
         # ---- 12. the bind path must not ask DNS who we are --------------
