@@ -79,8 +79,11 @@ chrono submit --json '{
 返回 `run_id` 并立即退出；计划在 conductor 中执行。
 
 面板上最显眼的是 `instruction`——**做什么**——倒计时是挂在它上面的时基。
-只有 `expect_source` 为 `none`/`http`/`inject`（面板自己就是观测面）时才会出现
-一个按 GO 的按钮；真实传感器观测时它不渲染，因为那个按钮不能算证据。
+面板没有主按钮：它的工作是把「在 T 做 X」这句话送到人眼前，不是请人点它。
+`expect_source` 缺省是 `none`，意思是**这条只提醒**：没有人观测你，什么也不记录，
+面板上不会出现任何可点的东西。要让人自己把时刻记下来，显式写 `"expect_signal":
+{"source": "http"}`，面板底部才会多一个「记下我做的时刻（可选）」的小按钮；
+真实传感器观测时它同样不出现。
 
 ```bash
 chrono status reset-demo            # 当前状态
@@ -145,7 +148,11 @@ chrono_cue(
 两条同时跑的 cue 不是两个提示，而是第二个把第一个顶掉。
 
 返回值里 `status` 是状态机、`verdict` 是结论。`verdict: "ok"` 才是“按计划结束”——
-一个不要求人按任何键的 cue 到期会记成 `status: "timeout"`，那是它的**成功**终态。
+一个不要求人做可观测动作的 cue 到期会记成 `status: "timeout"`，那是它的**成功**终态。
+
+不传 `expect_source` 就是 `none`：只提醒，不观测。想让人自己把时刻记下来就传
+`expect_source="http"`，面板才会多出那个可选的记录按钮；传传感器名（`serial`、
+`console_key`）则机器看硬件，不看面板。
 
 ### CLI
 
@@ -300,7 +307,7 @@ Windows 11 / CPython 3.13，详见 [`docs/implementation-notes.md`](implementati
 | [`docs/m1.md`](docs/m1.md) | M1 测量实验方法 |
 | [`docs/theory.md`](docs/theory.md) | 理论依据（时间触发 / 人机节拍同步） |
 | [`docs/problem.md`](docs/problem.md) | 问题定义与量化 |
-| [`docs/usage-findings.md`](docs/usage-findings.md) | 实测踩坑记录（七个问题，均已有结论） |
+| [`docs/usage-findings.md`](docs/usage-findings.md) | 实测踩坑记录（八个问题，均已有结论） |
 | [`docs/related-work.md`](docs/related-work.md) | 相关项目调研 |
 | [`case-studies/loongson-2k1000.md`](case-studies/loongson-2k1000.md) | 实例：龙芯 2K1000LA PMON 引导窗口捕获 |
 

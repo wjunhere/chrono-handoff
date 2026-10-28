@@ -183,3 +183,6 @@ panel.window_hooks.update({
   `/api/health` 与 `/api/wait-armed` 多了 `queued`，`/api/events` 多了 `run_id` 参数。
   旧页面会把最新被武装的 cue 当成唯一一条显示，也不会告知后面还有一条——
   这正是这个版本号要拦的那种错配。
+  3 → 4 那次也是语义：`expect_source: "none"` 不再是「面板点击算证据」，而是
+  「只提醒、不观测」。旧页面会为这样的 cue 显示大按钮并把点击回传，
+  而现在那个点击只会进日志、不再算证据——人按了却什么都没记下。

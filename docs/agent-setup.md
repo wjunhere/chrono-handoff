@@ -217,6 +217,17 @@ agent 看得到每个字段的说明与默认值，不需要额外包一层 `arg
 人只有一双眼睛，两条同时跑的 cue 不是两个提示——第二个会把第一个从面板上顶掉。
 真正需要并行时（一人一条）传 `queue=false`。
 
+### `expect_source`：默认只提醒
+
+| 值 | 谁在观测 | 面板上有什么 |
+|---|---|---|
+| 不传 / `none` | 没人 | 什么都没有，只提示时刻 |
+| `http` | 面板 | 一行可选的「记下我做的时刻」 |
+| `serial` / `console_key` / `stdin_line` / `sim` | 硬件/终端 | 什么都没有，机器看硬件 |
+
+组件的常见用法是「在 T 做 X」，不是「在 T 按一下」。所以默认不观测、不记录，
+面板也不会把人引向自己。要拿到人的时刻就显式传 `expect_source="http"`。
+
 ### `status` 不是结论，`verdict` 才是
 
 | `status` | `verdict` | 意思 |
@@ -227,7 +238,7 @@ agent 看得到每个字段的说明与默认值，不需要额外包一层 `arg
 | `partial` | `unverified` | 收到信号但未确认生效 |
 | `aborted` | `cancelled` | 被取消 |
 
-一个不要求人按任何键的 cue 到期会记成 `status: "timeout"`，那只是状态机
+一个不要求人做可观测动作的 cue 到期会记成 `status: "timeout"`，那只是状态机
 走到的终态；它是否按计划结束看 `verdict`。分支判断请用 `verdict`。
 
 为什么这么设计 —— 这正是 README §一 的核心论点：
@@ -275,6 +286,7 @@ agent 看得到每个字段的说明与默认值，不需要额外包一层 `arg
 | 重复执行副作用 | `on_window` 扫射天然幂等设计要求；串口动作请自行保证幂等 |
 | 提示被忽略 | `duration_s` 兜底，到点结束而非挂起；`verdict` 说明这是否算成功 |
 | 两条 cue 叠在一起 | `queue` 默认串行化，后一条等前一条的拍子播完 |
+| 把人引成“按按钮” | 默认 `none` 只提醒：不观测、不记录，面板上不出现任何可点的东西 |
 
 ---
 
@@ -282,10 +294,10 @@ agent 看得到每个字段的说明与默认值，不需要额外包一层 `arg
 
 ```bash
 chrono selftest                 # 机制自检（10 项）
-python scripts/e2e_panel.py     # 面板 HTTP 全链路（52 项）
+python scripts/e2e_panel.py     # 面板 HTTP 全链路（58 项）
 python scripts/e2e_window.py    # 原生窗口（17 项）
-python scripts/e2e_ui_layout.py # 布局几何 + 界面层级（39 项）
-python scripts/audit_panel.py   # 界面读数审计：字号/行数/占比（16 项）
+python scripts/e2e_ui_layout.py # 布局几何 + 界面层级（40 项）
+python scripts/audit_panel.py   # 界面读数审计：字号/行数/占比（20 项）
 python scripts/e2e_resize.py    # 拖拽缩放（10 项）
 python scripts/e2e_theme_drag.py# 主题对比度 + 拖拽隔离（16 项）
 python scripts/e2e_daemon_window.py # 一体化模式（11 项）

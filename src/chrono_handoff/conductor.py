@@ -982,6 +982,14 @@ class Conductor:
         follow one countdown, so two live cues are not two cues -- the second
         silently replaces the first on screen.  Pass ``queue=False`` for the
         genuinely simultaneous case (e.g. one cue per person).
+
+        ``expect_source`` defaults to ``"none"``, which means **this cue only
+        reminds**: nothing observes the human, nothing is recorded, and the page
+        renders no record control.  That is the component's whole job in the
+        common case -- "do X at T" -- and it must not be dressed up as a request
+        to press a button.  Pass ``"http"`` when the panel itself should capture
+        the moment, or a sensor source (``serial``, ``console_key``...) when the
+        hardware is the evidence.
         """
         if not instruction:
             raise ValueError("instruction is required")

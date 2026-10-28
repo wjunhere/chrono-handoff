@@ -122,8 +122,11 @@ def main() -> int:
             OUT["overlay_closes"] = js("!document.body.classList.contains('settings-open')")
 
             # arm a cue and press relative to GO
+            # `http` on purpose: the page's record control only exists when the
+            # panel is the observation surface.  `none` means "only reminds", and
+            # the click would be journalled as not-evidence.
             run = w.conductor.cue(instruction="press RESET", target_in_s=3.0, lead_s=1.2,
-                                  ioi_ms=300, tail_beats=4, expect_source="none",
+                                  ioi_ms=300, tail_beats=4, expect_source="http",
                                   duration_s=12, open_panel=False)
             time.sleep(1.5)
             OUT["page_has_schedule"] = js("!!S.sched")

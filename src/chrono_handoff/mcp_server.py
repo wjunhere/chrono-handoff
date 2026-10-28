@@ -165,7 +165,11 @@ class ExpectSignal(TypedDict, total=False):
 
     source: Annotated[
         Literal["console_key", "stdin_line", "http", "serial", "sim", "none"],
-        Field(description="Where the evidence comes from. 'none' means the panel's own press counts."),
+        Field(
+            description="Where the evidence comes from. 'none' = the cue only reminds: "
+            "nothing is observed and nothing is recorded. 'http' = the panel's own "
+            "record button captures the moment."
+        ),
     ]
     pattern: Annotated[str, Field(description="Regex matched against the payload; empty = any reading counts.")]
     timeout_s: Annotated[float, Field(description="Seconds after the GO beat to keep listening.")]
@@ -333,7 +337,11 @@ def tool_cue(
     ] = False,
     expect_source: Annotated[
         Literal["console_key", "stdin_line", "http", "serial", "sim", "none"] | None,
-        Field(description="How the human's action is observed (default: the panel's own press counts as 'none')."),
+        Field(
+            description="How the human's action is observed. Omit it and the cue only "
+            "reminds ('none'): nothing is recorded, and the panel shows no record "
+            "control. Pass 'http' when the panel itself should capture the moment."
+        ),
     ] = None,
     duration_s: Annotated[float, Field(description="Hard budget (default 30).")] = 30.0,
     queue: Annotated[
@@ -785,6 +793,8 @@ INSTRUCTIONS = (
     "cue, end the turn, then poll with chrono_observe. "
     "One cue at a time: a second cue is queued behind the one on screen and "
     "starts by itself when that one finishes (queue=false to run alongside). "
+    "The cue reminds a person of WHAT to do and WHEN; it is not a button prompt, "
+    "and by default nothing is recorded about the human. "
     "Read `verdict`, not `status`, to decide whether a run went to plan: a cue "
     "that expected no signal ends `status: timeout` with `verdict: ok`. "
     "Keyword families: countdown, timer, operator cue, human in the loop, "

@@ -28,6 +28,13 @@ __version__ = "0.1.1"
 #: armed cue as if it were the only one, and would not know to say a second one
 #: is coming -- which is exactly the stale-file mismatch this number exists to
 #: catch.
-CONTRACT_VERSION = 3
+#:
+#: 3 -> 4: ``expect_source: "none"`` no longer means "the panel's own click is the
+#: evidence".  It means the cue only *reminds*: nothing observes the operator, so
+#: the page renders no record control at all, and a click on the panel is journalled
+#: as not-evidence.  A page from build 3 would show its big "GO 时按下" button for
+#: such a cue and post a click that no longer counts -- the operator presses and
+#: nothing is recorded, silently.
+CONTRACT_VERSION = 4
 
 __all__ = ["CONTRACT_VERSION", "__version__"]

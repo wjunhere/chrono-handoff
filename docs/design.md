@@ -217,6 +217,12 @@ sync_cancel({ "id": "sync_001" })
 会误导人：一个 `expect_signal.source == "none"` 的 cue 本来就不要求人做任何可观测的
 动作，`duration_s` 到点后它必然记成 `TIMEOUT`——而那是这条 cue 的**成功**终态。
 
+`none` 的完整含义是「**只提醒**」：没人观测操作者，什么也不记录，面板上也不应
+出现任何可点的东西。`http`/`inject` 才是「面板就是观测面」，那时面板会提供一行
+可选的「记下我做的时刻」；传感器（`serial`/`console_key`/`stdin_line`/`sim`）则由
+硬件给出证据。三者不得混用：让面板点击去满足一条在等串口模式的 run，就是用自报
+替掉了物理闭环。
+
 所以快照里另有一个 `verdict`：
 
 | `status` | `verdict` | 含义 |

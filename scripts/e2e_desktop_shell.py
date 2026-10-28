@@ -802,24 +802,28 @@ def main() -> int:
         # "before_min_offset" -- correctly.  The check was measuring its own
         # impatience.  Keep the zero inside the wait below.
         run = conductor.cue(instruction="press RESET", target_in_s=5.0, lead_s=2.0,
-                            ioi_ms=500, tail_beats=4, expect_source="none",
+                            ioi_ms=500, tail_beats=4, expect_source="http",
                             duration_s=30, open_panel=False)
         time.sleep(1.0)
         # The page presses on its own at the GO beat (CHRONO_PAGE_SELFTEST=press):
-        # it polls until it holds a live schedule, waits for the zero, then
-        # dispatches a pointerdown on the GO button -- real handler, real fetch,
-        # real cross-origin POST.
+        # it polls until it holds a live schedule and the panel is the observation
+        # surface, waits for the zero, then dispatches a pointerdown on the record
+        # control -- real handler, real fetch, real cross-origin POST.  `http` on
+        # purpose: with the default `none` the page renders no record control at
+        # all ("this cue only reminds"), so there would be nothing to press.
+        #
+        # There used to be a second, best-effort OS click at a fixed fraction of
+        # the window (`h * 0.697`), aimed at the full-width "GO 时按下" button.
+        # That button is gone -- the control is now a small, left-aligned record
+        # button -- so a fraction of the window cannot address it any more, and a
+        # click that silently misses is worse than no click: it reads as evidence
+        # the OS path works when it was never exercised.
         pressed = False
         for _ in range(30):
             after = conductor.get(run["run_id"])
             if after and after.signal_seen:
                 pressed = True
                 break
-            # Keep trying the synthetic click as well: when it does land, it is
-            # extra evidence that the same path works from the OS.
-            focus(hwnd)
-            x, y, w, h = rect_of(hwnd)
-            click(x + w // 2, y + int(h * 0.697))
             time.sleep(0.8)
         if pressed:
             live = conductor.get(run["run_id"])

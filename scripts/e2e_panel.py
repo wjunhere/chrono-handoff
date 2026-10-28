@@ -144,7 +144,7 @@ def main() -> int:
                     "visual": True,
                     "target_in_s": 1.6,
                     "duration_s": 6.0,
-                    "expect_signal": {"source": "none", "timeout_s": 5.0},
+                    "expect_signal": {"source": "http", "timeout_s": 5.0},
                     "meta": {"calibrate": False},
                 }
             },
@@ -454,6 +454,29 @@ def main() -> int:
               panel.current_run() == prepared["run_id"],
               f"current={panel.current_run()} status={conductor.status(prepared['run_id'])['status']}")
         conductor.cancel(prepared["run_id"], "e2e_cleanup")
+
+        # ---- 11f. `none` only reminds: a click is journalled, not counted ----
+        #
+        # The default `expect_source` means "do X at T, nothing watches".  A click
+        # on the panel must not become the evidence for that cue -- that is what
+        # made every default cue a request to press a button, and it contradicted
+        # the verdict rule that reads `none` as "expects no signal".  It is still
+        # journalled, so the agent can see that the human thought they acted.
+        #
+        # Last, because it arms a run of its own: everything above reads "the
+        # current run", and a cue armed here would answer instead of the one the
+        # earlier checks armed.
+        rem = conductor.cue(instruction="拍一下手", target_in_s=1.0, lead_s=0.3, ioi_ms=200,
+                            tail_beats=1, duration_s=4, open_panel=False, queue=False)
+        time.sleep(0.3)
+        r_none = post(base + "/api/press", {"run_id": rem["run_id"], "payload": "done"})
+        check("a click on a reminder-only cue is not the evidence",
+              r_none.get("ok") is True and r_none.get("recorded") is False,
+              f"recorded={r_none.get('recorded')} reason={r_none.get('reason')}")
+        check("...but it is journalled, not dropped",
+              any(e.kind == "panel_press_not_evidence" for e in conductor.events(rem["run_id"])),
+              f"{len(conductor.events(rem['run_id']))} events")
+        conductor.cancel(rem["run_id"], "e2e_cleanup")
 
 
         # ---- 12. the bind path must not ask DNS who we are --------------

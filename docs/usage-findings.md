@@ -4,7 +4,7 @@
 > 场景：给嵌入式实验的板载 LED 拍实物照片，需要人在 6 个时刻依次按状态拍摄。
 > 平台：Windows 11 · CPython 3.14 · Git Bash · 通过 MCP（`chrono mcp`）调用。
 >
-> 本文只写**实际踩到的东西**，每条都带复现方式与根因定位。五个问题现在都已修掉，
+> 本文只写**实际踩到的东西**，每条都带复现方式与根因定位。八个问题现在都已修掉，
 > 每节末尾的「修法」写的是最终改动，而不是当时的绕行。
 
 ---
@@ -269,8 +269,8 @@ clock        58 px   55 px 高   ← 倒计时
 | 项 | 改动 |
 |---|---|
 | 指令 | `clamp(19px,3.6vmin,32px)` + `white-space:pre-line`（实测 4 行 → 4 行） |
-| 主按钮 | 只在 `expect_source ∈ {none,http,inject}` 时渲染；传感器观测时 `body.sensor-owned` 使整块 `display:none`，指令占用那片空间 |
-| 按钮尺寸 | 51 px → 42 px，字号降一档：它是靶子，不是控制台 |
+| 主按钮 | 只在 `expect_source ∈ {none,http,inject}` 时渲染；传感器观测时 `body.sensor-owned` 使整块 `display:none`，指令占用那片空间（**问题 8 推翻了这一条**：`none` 也不该出现，类名改为 `no-press`） |
+| 按钮尺寸 | 51 px → 42 px，字号降一档：它是靶子，不是控制台（**问题 8 又降一级**：不再是主按钮） |
 | 遥测 | 默认折到 1 行（52 px），其余点「遥测」展开；真按钮 + `aria-expanded`，不是悬停 |
 | 文案 | `在那一刻做上面那件事`，不再以"按下"结尾 |
 | 结束态 | 用 `verdict` → `已完成 / 没收到动作 / 已取消` |
@@ -296,8 +296,9 @@ clock        58 px   55 px 高   ← 倒计时
 ### 修法
 
 - **`SOURCE_WORDS` 映射表**：`console_key → 控制台按键`、`stdin_line → 终端输入`、
-  `serial → 串口`、`http/none → 面板`、`sim → 模拟源`；未收录的回退原字串
-  （宁可显式无名，不要静默错标）。句子同时缩短：`做完就行，机器在${word}上确认。`
+  `serial → 串口`、`http/inject → 面板`、`none → （无，仅提示）`、`sim → 模拟源`；
+  未收录的回退原字串（宁可显式无名，不要静默错标）。句子同时缩短：
+  `做完就行，机器在${word}上确认。`
 - **`#clock.tail` 从 `clamp(26,9vmin,72)` 降到 `clamp(18,4.6vmin,34)`**：实测 40 px → 20.5 px
   （倒计时的 19%）。
 - **`--clock-scale` + `fitInstruction()`**：时钟按**实测行数**缩放
@@ -320,3 +321,54 @@ clock        58 px   55 px 高   ← 倒计时
 遥测折叠后 `getBoundingClientRect().right` 恒为 0，于是「密集导轨下每个遥测值仍在屏内」
 那条检查的 `right <= innerWidth` 永远成立——它会在布局真坏时变绿。现在要求
 `width > 0`，并在测量前先把遥测展开。
+
+---
+
+## 问题 8 ★ 那个按钮还在说「按我」——`none` 到底是什么意思（已修）
+
+### 现象
+
+问题 6 把按钮缩小、传感器观测时隐藏之后，截图里仍然是：
+
+```
+重拍那一刻拍一下手
+
+        ┌───────────────────────┐
+        │      GO 时按下        │
+        └───────────────────────┘
+```
+
+指令说的是「拍手」，按钮说的是「按我」。同一个屏幕上两个任务，大那个是错的。
+
+### 根因不在文案，在语义
+
+`webui.PANEL_OBSERVED_SOURCES = {"", "none", "http", "inject"}`，而 `none` 同时被
+`_verdict_for` 定义成「这条 run 不期待任何信号」。**同一个枚举值两套定义**：
+面板说点击算证据，verdict 说不期待信号。于是：
+
+| 位置 | 事实 |
+|---|---|
+| `conductor.cue()` | `expect_source` 缺省 `"none"` |
+| `webui.prepare()` | 没给 expect 时塞 `SignalSpec(source="none")` |
+| `mcp_server` 工具描述 | 写着 `'none' means the panel's own press counts` |
+
+结果：**开箱即用的每一条路径都把面板变成了证据源**，按钮必然出现。项目里没有
+任何一个值表达「我只是提醒你，不观测你」——而那正是最常见的用法。
+
+### 修法
+
+- `none` = **只提醒**：`PANEL_OBSERVED_SOURCES` 只剩 `{"http", "inject"}`。
+  `none` 时面板不渲染任何可点的东西，点击只入日志（`panel_press_not_evidence`）。
+- 按钮降级成**可选的记录控件**：从 `.actions` 主位移到底部安静一行，
+  标签 `记下我做的时刻（可选）`，旁注 `按一下会记下你的时刻；不按也照样跑完。`
+- guidance 说实话：`none` 时「这条只提示，不记录你的动作」；传感器时
+  「机器在控制台按键上确认」；面板观测时「在那一刻做上面那件事」。
+- `CONTRACT_VERSION` 3 → 4：旧页面会为大按钮回传一个现在不算证据的点击。
+
+### 回归
+
+`audit_panel.py` 新增 3 条断言（`none` 时记录控件高度 0、`http` 时出现、且宽度
+小于视口的 60%——它不再是通栏主按钮），并新增 `countdown/reminder` 阶段；
+`e2e_ui_layout.py` 新增 2 条；`e2e_panel.py` 新增「`none` 下的点击不算证据、但仍入日志」。
+`e2e_panel_attach` / `e2e_window` / `e2e_desktop_shell` 的 press 用例从 `none` 改成 `http`
+——它们测的是记录路径，不是默认语义。

@@ -50,10 +50,12 @@
            there carries real information (which beat is GO)
          * one accent for the whole panel -- GO.  There is no second accent
            to dilute it
-         * a press button exists only when THIS panel is the observation
-           surface; when a sensor owns the evidence it is not rendered at all,
-           because a button that cannot count as evidence must not be the
-           biggest interactive thing on the screen
+         * there is NO primary button.  The panel delivers a sentence and a
+           clock; it does not ask to be clicked.  The only control that can
+           record anything is a quiet "记下我做的时刻（可选）" row, and it
+           exists only when THIS panel is the observation surface -- with a
+           sensor owning the evidence, or a cue that only reminds (`none`),
+           nothing is rendered there at all
          * telemetry is folded away: an operator reads the clock alignment
            once and then ignores it forever
          * structure is drawn with hairlines, not with nested cards
@@ -356,43 +358,46 @@
     /* ------------------------------------------------------------- actions */
     .actions{display:grid;gap:clamp(7px,1.5vmin,12px)}
 
-    /* THE GO BUTTON IS NOT THE POINT OF THE PANEL.
+    /* THERE IS NO PRIMARY BUTTON, AND THAT IS THE POINT.
 
-       The panel's job is to tell a person what to do at a given instant.  A big
-       "press on GO" button was, by area, the most prominent interactive thing on
-       the surface -- so whatever the agent asked for, the interface said "press
-       this".  It also had a second, worse failure: it only makes sense when the
-       PANEL is the thing observing the operator.  When a real sensor owns the
-       evidence (a serial prompt, a console key -- the production shape), the
-       button was hidden but still reserved its row, and the operator's actual
-       task was relegated to the phrase "按上面说的做".
+       The panel's job is to tell a person what to do at a given instant.  It
+       used to do that with a big "GO 时按下" button in the primary slot -- by
+       area the most prominent interactive thing on the surface -- so whatever
+       the agent had asked for, the interface said "press this".  That trains a
+       person to react to the stimulus instead of doing the thing, which is the
+       exact inversion this component exists to avoid.
 
-       So it exists only when it is the measurement surface, and it no longer
-       claims to be a control panel: it is a target to hit, sized as a target, and
-       it says what it measures.  `body.sensor-owned` (set by applySchedule) hides
-       the whole block so the instruction can use the space. */
-    body.sensor-owned #press{display:none}
+       What is left is a *recording* control, and only when this panel is the
+       only thing that can see the operator (`expect_source` http/inject).  It is
+       quiet on purpose: ghost styling, its own row below the cue, and a label
+       that says what it does.  Pressing it is optional -- it records WHEN the
+       action happened, it is not the action.  When a sensor owns the evidence,
+       or when the cue only reminds (`none`), the row is not rendered at all. */
+    .record{display:flex;align-items:center;gap:clamp(7px,1.5vmin,10px);
+      padding-top:clamp(6px,1.2vmin,10px);border-top:1px solid var(--line)}
+    body.no-press .record{display:none}
+    .record .why{font-size:clamp(10px,1.35vmin,12px);color:var(--dim2);line-height:1.35}
     #press{
-      width:100%;border:1px solid var(--line);border-radius:var(--r);
-      padding:clamp(10px,2.4vmin,20px) 16px;
-      font-size:clamp(13px,2.1vmin,18px);font-weight:600;letter-spacing:.02em;
-      color:var(--fg);background:var(--raised);
+      flex:0 0 auto;border:1px solid var(--line);border-radius:var(--r);
+      padding:clamp(6px,1.4vmin,10px) clamp(10px,2vmin,15px);
+      font-size:clamp(11px,1.6vmin,13.5px);font-weight:600;letter-spacing:.01em;
+      color:var(--dim);background:transparent;white-space:nowrap;
       /* colour is deliberately NOT transitioned: the instant the button turns
-         GO-amber or press-green is exactly when its label must be readable,
+         GO-amber or record-green is exactly when its label must be readable,
          and a 160ms cross-fade leaves it mid-grey over the new fill.  The
          surface fades, the text snaps. */
       transition:transform var(--dur) var(--ease),background var(--dur) var(--ease),
-                 border-color var(--dur) var(--ease)}
-    #press:hover:not(:disabled){background:rgba(255,255,255,.12);border-color:var(--line-2);
-      transform:translateY(-1px)}
+                 border-color var(--dur) var(--ease),color var(--dur) var(--ease)}
+    #press:hover:not(:disabled){background:var(--raised);color:var(--fg);
+      border-color:var(--line-2)}
     #press:active:not(:disabled){transform:translateY(0) scale(.995)}
-    #press.beat{border-color:var(--line-2)}
+    #press.beat{border-color:var(--line-2);color:var(--fg)}
     #press.go{background:var(--accent);color:var(--accent-ink);
       border-color:var(--accent)}
     #press.hit{background:var(--ok);color:#04220f;border-color:var(--ok)}
     #press:disabled{opacity:.42;transform:none;cursor:not-allowed}
-    /* A registered press is ALSO disabled (the cue is over).  The blanket
-       :disabled opacity must not dim it: "your press landed" is the one
+    /* A registered record is ALSO disabled (the cue is over).  The blanket
+       :disabled opacity must not dim it: "your moment landed" is the one
        reading the operator must be able to see at a glance, and at 42% it
        washed out to pale green with near-invisible text. */
     #press.hit:disabled{opacity:1}
@@ -568,7 +573,7 @@
     body:not(.shell) .grip{display:none}
 </style>
 </head>
-<body class="idle">
+<body class="idle no-press">
 
 <div id="titlebar">
   <div class="drag" id="drag"><span class="name" id="tb-name">chrono-handoff</span></div>
@@ -600,22 +605,26 @@
     </div>
     <div id="grid"></div>
     <div class="actions">
-      <!-- Only when THIS panel is the observation surface.  When a real sensor
-           owns the evidence the whole block is hidden by `body.sensor-owned`:
-           the operator's job is the instruction, and a button that cannot count
-           as evidence must not be the biggest thing on the screen. -->
-      <button id="press" disabled>GO 时按下</button>
       <div class="row">
         <button class="ghost" id="start" hidden>立即开始</button>
         <button class="ghost" id="resync">重新校时</button>
       </div>
+    </div>
+    <!-- The recording control, NOT the task.  Rendered only when this panel is
+         the only thing that can see the operator; `body.no-press` hides it for a
+         sensor-owned run and for a cue that only reminds (`none`).  It says what
+         it does, because a button labelled "GO 时按下" in the primary slot was
+         the panel telling people the wrong job. -->
+    <div class="record">
+      <button id="press" disabled>记下我做的时刻（可选）</button>
+      <span class="why">按一下会记下你的时刻；不按也照样跑完。</span>
     </div>
     <div class="meter">
       <div class="m always"><span>栅格</span><b id="m-beats">--</b></div>
       <div class="m"><span>时钟偏移 · 客户端→服务端</span><b id="m-offset">--</b></div>
       <div class="m"><span>往返延迟</span><b id="m-rtt">--</b></div>
       <div class="m"><span>音频调度</span><b id="m-audio">--</b></div>
-      <div class="m"><span>你的按压 vs GO</span><b id="m-result">--</b></div>
+      <div class="m"><span>记录的时刻 vs GO</span><b id="m-result">--</b></div>
       <button id="meter-toggle" aria-expanded="false" aria-controls="meter-rows">遥测</button>
     </div>
   </div>
@@ -1058,10 +1067,11 @@ function tick() {
    cue" instead of freezing on a stale tail number. */
 function goIdle() {
   document.body.classList.add("idle");
-  // The sensor-owned state is per-cue, not per-session: the next cue may well
-  // have the panel as its observation surface, and leaving the class set would
-  // hide the button on a cue that needs it.
-  document.body.classList.remove("sensor-owned");
+  // Nothing to record when there is no cue: the record row is per-cue, and the
+  // next cue's `applySchedule` decides whether it exists at all (only when the
+  // panel is the observation surface).  Leaving it up in idle is a disabled
+  // button asking to be clicked for a cue that does not exist.
+  document.body.classList.add("no-press");
   $("clock").textContent = "--";
   $("clock").className = "clock";
   $("phase").textContent = "";
@@ -1069,7 +1079,7 @@ function goIdle() {
   $("grid").innerHTML = "";
   $("press").classList.remove("go", "beat", "hit");
   $("press").hidden = false;
-  $("press").textContent = "GO 时按下";
+  $("press").textContent = "记下我做的时刻（可选）";
   $("press").disabled = true;
   $("start").hidden = true;
   // The idle copy is a new base sentence; a queued count carried over from the
@@ -1098,7 +1108,7 @@ async function doPress(ev) {
     const r = await (await fetch(apiURL("/api/press"), {
       method: "POST", headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
-        run_id: S.runId, payload: "space",
+        run_id: S.runId, payload: "done",
         client_wall_ms: clientMs, clock_offset_ms: S.offsetMs,
       }),
     })).json();
@@ -1139,9 +1149,10 @@ const SOURCE_WORDS = {
   stdin_line:  "终端输入",
   serial:      "串口",
   http:        "面板",
+  inject:      "面板",
   sim:         "模拟源",
-  none:        "面板",
-  "":          "面板",
+  none:        "（无，仅提示）",
+  "":          "（无，仅提示）",
 };
 function sourceWord(src) {
   return SOURCE_WORDS[src] || src;
@@ -1172,21 +1183,22 @@ async function applySchedule(sched) {
   $("state").textContent = "提示已就绪";
   $("live").classList.add("live");
 
-  // The reminder and the evidence are two different things.  This panel is the
-  // observation surface only when the run says so; when a real sensor owns the
-  // evidence (a serial prompt, a console key), the operator's job is the
-  // physical action in the instruction -- pressing THIS button would not count
-  // and must not be presented as if it would.
+  // The reminder and the evidence are two different things, and `none` is the
+  // first one: "this cue only reminds" -- nothing observes the operator, so the
+  // panel must not offer to record anything.  It used to mean "the panel's own
+  // click is the evidence", which turned every default cue into a request to
+  // press a button -- the inversion this panel exists to avoid.
   const observedBy = (sched.expect_source || "none").split(":")[0];
-  const panelObserved = ["", "none", "http", "inject"].includes(observedBy);
+  const panelObserved = ["http", "inject"].includes(observedBy);
+  const reminderOnly = !panelObserved && (observedBy === "" || observedBy === "none");
   S.panelObserved = panelObserved;
 
-  // Hide the whole press block, not just the button: a hidden button still
+  // Hide the whole record row, not just the button: a hidden button still
   // reserved its row, and left a lone "重新校时" where the operator expected to
   // find what to do.  The class lets the instruction take the space instead.
-  document.body.classList.toggle("sensor-owned", !panelObserved);
+  document.body.classList.toggle("no-press", !panelObserved);
   $("press").disabled = !panelObserved;
-  $("press").textContent = panelObserved ? "GO 时按下" : "按上面说的做";
+  $("press").textContent = "记下我做的时刻（可选）";
   $("press").classList.remove("hit", "go", "beat");
   $("press").hidden = !panelObserved;
   // The manual-start affordance belongs to the armed state only.  Leaving it
@@ -1201,7 +1213,7 @@ async function applySchedule(sched) {
   const n = scheduleCue();
   // The instruction is the content; this line only says *when*.
   //
-  // Two rules, both learned from looking at the rendered panel:
+  // Three rules, all learned from looking at the rendered panel:
   //
   //   * never end in "踩在它上面按下" -- that teaches the operator to react to
   //     the stimulus instead of performing the action the agent asked for, which
@@ -1210,11 +1222,18 @@ async function applySchedule(sched) {
   //     "...机器会在 console_key 上确认。" which wrapped to THREE rendered lines
   //     (measured), pushing the countdown down and printing an internal enum at
   //     a person.  The channel name is now a human word and the sentence is short
-  //     enough that the clock keeps its room.
+  //     enough that the clock keeps its room;
+  //   * say when nothing is watching.  An operator who believes the machine is
+  //     recording them will look for a way to report -- which is exactly how the
+  //     panel ended up as a button to press.
   if (panelObserved) {
     $("guidance").textContent = sched.audio
       ? "听脉冲，重拍就是 GO：在那一刻做上面那件事。"
       : "看栅格，重拍就是 GO：在那一刻做上面那件事。";
+  } else if (reminderOnly) {
+    $("guidance").textContent = sched.audio
+      ? "听脉冲，重拍就是 GO。做完就行，这条只提示，不记录你的动作。"
+      : "看栅格，重拍就是 GO。做完就行，这条只提示，不记录你的动作。";
   } else {
     // Say who owns the evidence, so the operator knows the machine is watching
     // the hardware rather than waiting to be clicked.
@@ -1225,7 +1244,7 @@ async function applySchedule(sched) {
   }
   if (n === 0) {
     $("guidance").textContent = panelObserved
-      ? "栅格在页面就绪前就播完了，仍可按下来记录时刻。"
+      ? "栅格在页面就绪前就播完了，仍可按「记下我做的时刻」。"
       : "栅格在页面就绪前就播完了，按原计划做就行。";
   }
   // A new cue means a fresh base sentence; the queued count is re-applied on
@@ -1556,7 +1575,7 @@ let healthNote = "";
 let healthContract = null;
 //: The contract this page speaks.  Must equal CONTRACT_VERSION in
 //: chrono_handoff/__init__.py; build.py's version gate compares them.
-const PAGE_CONTRACT = 3;
+const PAGE_CONTRACT = 4;
 
 /* Why this page must not drive the conductor that just answered.
 

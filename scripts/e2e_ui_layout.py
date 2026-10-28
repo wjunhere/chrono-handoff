@@ -168,7 +168,7 @@ def main() -> int:
                 # one ends.
                 armed = w.conductor.cue(instruction="按一下开发板上的 RESET 键", target_in_s=9.0,
                                         lead_s=6.0, ioi_ms=500, tail_beats=6,
-                                        expect_source="none", duration_s=20, open_panel=False)
+                                        expect_source="http", duration_s=20, open_panel=False)
                 last_armed["id"] = armed["run_id"]
                 # Both conditions, because either alone is satisfied by a page with
                 # nothing to show yet: a fresh page renders `--` with an empty grid,
@@ -282,12 +282,13 @@ def main() -> int:
             if last_armed.get("id"):
                 w.conductor.cancel(last_armed["id"], "test_handover")
                 time.sleep(0.6)
-            w.conductor.cue(instruction="给板载 LED 拍照", target_in_s=9.0, lead_s=6.0,
-                            ioi_ms=500, tail_beats=6, expect_source="stdin_line",
-                            duration_s=20, open_panel=False, queue=False)
+            sensor = w.conductor.cue(instruction="给板载 LED 拍照", target_in_s=9.0, lead_s=6.0,
+                                     ioi_ms=500, tail_beats=6, expect_source="stdin_line",
+                                     duration_s=20, open_panel=False, queue=False)
             deadline = time.time() + 12.0
             while time.time() < deadline:
-                if js("document.body.classList.contains('sensor-owned')"):
+                if js(f"S.runId === {json.dumps(sensor['run_id'])} && "
+                      "document.body.classList.contains('no-press')"):
                     break
                 time.sleep(0.2)
             OUT["sensor_owned"] = js('''(() => {
@@ -296,9 +297,44 @@ def main() -> int:
                 const lh = parseFloat(cs.lineHeight) || parseFloat(cs.fontSize) * 1.5;
                 return {
                   bodyClass: document.body.className,
-                  pressDisplay: getComputedStyle(document.getElementById("press")).display,
+                  recordDisplay: getComputedStyle(document.querySelector(".record")).display,
+                  pressWidth: Math.round(document.getElementById("press").getBoundingClientRect().width),
                   guidance: g.textContent,
                   guidanceLines: Math.round(g.getBoundingClientRect().height / lh) };})()''')
+
+            # ---- a cue that only reminds shows no record control ------------
+            # The component's common case: the agent asks a person to do
+            # something at T and nothing watches.  Offering a button here is the
+            # panel telling the operator the wrong job, which is how "GO 时按下"
+            # ended up as the biggest thing on the card.
+            #
+            # The sensor cue above is cancelled first: it owns the screen, and the
+            # panel deliberately keeps the cue the operator is following.
+            w.conductor.cancel(sensor["run_id"], "test_handover")
+            time.sleep(0.6)
+            remind = w.conductor.cue(instruction="拍一下手", target_in_s=9.0, lead_s=6.0,
+                                     ioi_ms=500, tail_beats=2, duration_s=20, open_panel=False,
+                                     queue=False)
+            deadline = time.time() + 12.0
+            while time.time() < deadline:
+                # Digits, not just the run id: the page renders an armed cue as
+                # "准备" first (that is the prepare/start pair), and sampling there
+                # reads the armed sentence instead of this cue's guidance.
+                if js(f"S.runId === {json.dumps(remind['run_id'])} && "
+                      "document.body.classList.contains('no-press') && "
+                      "document.getElementById('clock').textContent.trim().match(/^[0-9]+$/)"):
+                    break
+                time.sleep(0.2)
+            OUT["reminder_only"] = js('''(() => ({
+                  bodyClass: document.body.className,
+                  recordDisplay: getComputedStyle(document.querySelector(".record")).display,
+                  pressWidth: Math.round(document.getElementById("press").getBoundingClientRect().width),
+                  guidance: document.getElementById("guidance").textContent }))()''')
+            # Cancelled before the resize: a live cue would make the next `arm()`
+            # queue behind it (correctly) and the tall-window check would then
+            # measure the armed state instead of a countdown.
+            w.conductor.cancel(remind["run_id"], "test_handover")
+            time.sleep(0.6)
 
             # resize the window: the layout must respond, not need a zoom slider
             #
@@ -462,9 +498,9 @@ def main() -> int:
 
     # ---- a sensor-owned cue does not advertise a button ---------------
     so = OUT.get("sensor_owned") or {}
-    check("a sensor-owned cue hides the press block entirely",
-          so.get("pressDisplay") == "none",
-          f"display={so.get('pressDisplay')} body={so.get('bodyClass')!r}")
+    check("a sensor-owned cue hides the record control entirely",
+          so.get("recordDisplay") == "none" and so.get("pressWidth") == 0,
+          f"record={so.get('recordDisplay')} press_w={so.get('pressWidth')} body={so.get('bodyClass')!r}")
     # The guidance line must send the operator to the INSTRUCTION, must not tell
     # them to press anything, and must name the observing channel in words a
     # person reads -- `expect_source` is an enum (console_key, stdin_line, ...)
@@ -485,6 +521,19 @@ def main() -> int:
           repr(g))
     check("its guidance fits one line",
           (so.get("guidanceLines") or 0) == 1, f"{so.get('guidanceLines')} lines")
+
+    # ---- a cue that only reminds offers nothing to press ---------------
+    # `expect_source` omitted means "do X at T, nothing watches".  The panel must
+    # say that, and must not render a control: a button here is the panel asking
+    # to be clicked, which is how "GO 时按下" became the biggest thing on a card
+    # whose job is to deliver a sentence.
+    ro = OUT.get("reminder_only") or {}
+    rg = str(ro.get("guidance") or "")
+    check("a cue that only reminds renders no record control",
+          ro.get("recordDisplay") == "none" and ro.get("pressWidth") == 0,
+          f"record={ro.get('recordDisplay')} press_w={ro.get('pressWidth')} body={ro.get('bodyClass')!r}")
+    check("...and says so instead of naming an observing channel",
+          "不记录" in rg and "确认" not in rg, repr(rg))
     ct = str(OUT.get("clock_text") or "")
     check("countdown shows a number (not '+' of nothing)", ct.isdigit() and len(ct) == 2,
           f"clock={ct!r} phase={OUT.get('phase_text')!r}")

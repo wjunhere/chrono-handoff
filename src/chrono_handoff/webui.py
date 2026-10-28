@@ -740,10 +740,23 @@ class CuePanel:
     #: be allowed to close the loop -- otherwise the physical closed loop is
     #: silently replaced by a self-report.  (Verified: a click used to satisfy a
     #: run that was watching a serial port for a pattern that never arrived.)
-    PANEL_OBSERVED_SOURCES = frozenset({"", "none", "http", "inject"})
+    #:
+    #: ``none`` and ``""`` are NOT here.  They mean "this cue only reminds":
+    #: nothing observes the operator, so the page renders no record control and
+    #: a click is journalled as not-evidence.  Having ``none`` in this set is what
+    #: turned every default cue into a request to press a button -- and it
+    #: contradicted `_verdict_for`, which already read ``none`` as "expects no
+    #: signal".  A cue that wants its moment recorded says so: ``http``.
+    PANEL_OBSERVED_SOURCES = frozenset({"http", "inject"})
 
     def press(self, body: dict[str, Any]) -> dict[str, Any]:
-        """Record the human's press.
+        """Record the moment the operator acted, when the panel is the observer.
+
+        This is a *measurement*, not the task: the page labels it "记下我做的时刻
+        （可选）" and only renders it for a run whose ``expect_source`` is the panel
+        (``http``/``inject``).  For anything else -- a sensor, or a cue that only
+        reminds -- the click is journalled as not-evidence rather than dropped, so
+        the agent can still see that the human thought they acted.
 
         ``client_wall_ms`` is the click handler's own timestamp, which is far
         more accurate than our receive time -- the HTTP round trip plus event
@@ -832,6 +845,10 @@ class CuePanel:
         plan.cancel_cue_on_signal = bool(body.get("cancel_cue_on_signal", False))
         plan.meta.setdefault("panel", True)
         if not plan.expect:
+            # `none` on purpose: a cue prepared from the panel with no observation
+            # source is a *reminder*.  It shows what to do and when, records
+            # nothing, and the page renders no record control.  Asking for the
+            # moment to be captured is an explicit choice (`http`).
             plan.expect = SignalSpec(source="none", timeout_s=plan.duration_s)
         run = self.conductor.submit(plan, paused=True)
         with self._lock:

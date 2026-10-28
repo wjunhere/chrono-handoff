@@ -95,8 +95,11 @@ def main() -> int:
         check("GET /api/settings succeeds", st == 200 and "settings" in s, f"HTTP {st}")
 
         # ---- the panel must LEARN that a cue was armed -------------------
+        # panel IS the evidence source here -> the click is recorded.  `http` on
+        # purpose: `none` means "this cue only reminds", and a click on such a cue
+        # must NOT count as evidence (checked in e2e_panel).
         run = conductor.cue(instruction="press RESET", target_in_s=8.0, lead_s=2.0,
-                            ioi_ms=400, tail_beats=4, expect_source="none",
+                            ioi_ms=400, tail_beats=4, expect_source="http",
                             duration_s=30, open_panel=False)
         rid = run["run_id"]
         st, armed = req(f"{base}/api/wait-armed?timeout=3")

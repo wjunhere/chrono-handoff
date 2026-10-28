@@ -95,6 +95,7 @@ PROBE = r"""
     clockText: ((document.querySelector("#clock") || {}).textContent || "").trim(),
     phase: info("#phase"),
     press: info("#press"),
+    record: info(".record"),
     meter: info(".meter"),
     meterRows: rows.length,
     meterVisible: rows.filter((m) => m.getBoundingClientRect().height > 0).length,
@@ -116,12 +117,17 @@ TIMELINE = "\n".join([
 
 #: `expect_source` values, and the human word each must render as.  The enum is
 #: the agent's vocabulary; the panel's job is to speak the operator's.
+#:
+#: `none` is "nothing is watching": the page says so plainly instead of naming a
+#: channel, and renders no record control at all.
 SOURCE_WORDS = {
     "console_key": "控制台按键",
     "stdin_line": "终端输入",
     "serial": "串口",
     "http": "面板",
-    "none": "面板",
+    "inject": "面板",
+    "none": "（无，仅提示）",
+    "": "（无，仅提示）",
     "sim": "模拟源",
 }
 
@@ -273,10 +279,24 @@ def main(argv: list[str]) -> int:
                          'document.getElementById("clock").textContent === "准备"', 25)
             rep.add("ready", js(PROBE))
 
-            # -- countdown, panel-owned (the press button is legitimate) --
+            # -- countdown, panel-owned (the record control is legitimate) --
+            #
+            # `http` on purpose: the panel is the only thing that can see the
+            # operator for this cue, so it may offer the optional "记下我做的时刻"
+            # control.  With the default (`none`) it must not -- that phase is
+            # measured right after this one.
+            cue_and_settle(js, instruction="给板载 LED 拍照", target_in_s=8.0,
+                           lead_s=5.0, ioi_ms=500, tail_beats=3, duration_s=40,
+                           expect_source="http")
+            rep.add("countdown/panel", js(PROBE))
+
+            # -- countdown, reminder only (no record control at all) ------
+            # The component's common case: "do X at T", nothing watches.  A
+            # control here would be the panel asking to be clicked, which is the
+            # inversion this whole audit exists to catch.
             cue_and_settle(js, instruction="给板载 LED 拍照", target_in_s=8.0,
                            lead_s=5.0, ioi_ms=500, tail_beats=3, duration_s=40)
-            rep.add("countdown/panel", js(PROBE))
+            rep.add("countdown/reminder", js(PROBE))
 
             # -- countdown, sensor-owned (no button, human channel named) --
             cue_and_settle(js, instruction="给板载 LED 拍照", target_in_s=8.0,
@@ -427,11 +447,30 @@ def main(argv: list[str]) -> int:
               (meter_open.get("meterVisible") or 0) == (panel.get("meterRows") or -1),
               f"{meter_open.get('meterVisible')}/{panel.get('meterRows')} rows")
 
+    # 6b. The record control: offered when the panel is the observer, absent when
+    #     nothing is watching, and never shaped like the primary button it used to
+    #     be (full-width, in the action row, labelled "GO 时按下").
+    reminder = rep.phases.get("countdown/reminder") or {}
+    rep.check("a cue that only reminds renders no record control",
+              f(reminder, "record", "h") == 0 and f(reminder, "press", "h") == 0
+              and "no-press" in str(reminder.get("bodyClass")),
+              f"record h={f(reminder, 'record', 'h'):.0f} body={reminder.get('bodyClass')!r}")
+    rep.check("the record control is offered when the panel observes",
+              f(panel, "record", "h") > 0 and f(panel, "press", "h") > 0,
+              f"record h={f(panel, 'record', 'h'):.0f} press h={f(panel, 'press', 'h'):.0f}")
+    quiet_w = float(panel.get("vw") or 0) * 0.6
+    rep.check("...and it is a quiet control, not a full-width primary button",
+              f(panel, "press", "w") < quiet_w,
+              f"press w={f(panel, 'press', 'w'):.0f}px of {panel.get('vw')}px viewport "
+              f"(need < {quiet_w:.0f})")
+
     # 7. A sensor-owned cue does not advertise a button, and its guidance sends
     #    the operator to the instruction.
-    rep.check("a sensor-owned cue hides the press button",
-              f(sensor, "press", "h") == 0 and "sensor-owned" in str(sensor.get("bodyClass")),
-              f"press h={f(sensor, 'press', 'h'):.0f} body={sensor.get('bodyClass')!r}")
+    rep.check("a sensor-owned cue hides the record control",
+              f(sensor, "record", "h") == 0 and f(sensor, "press", "h") == 0
+              and "no-press" in str(sensor.get("bodyClass")),
+              f"record h={f(sensor, 'record', 'h'):.0f} press h={f(sensor, 'press', 'h'):.0f} "
+              f"body={sensor.get('bodyClass')!r}")
     g = str((sensor.get("guidance") or {}).get("text") or "")
     rep.check("the guidance does not tell the operator to press the panel",
               "按" not in g.replace("按键", ""), repr(g))
