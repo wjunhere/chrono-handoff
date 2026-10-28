@@ -277,7 +277,19 @@ uv build --wheel
 ```bash
 python scripts/_shot_window.py chrono-handoff            # -> logs/shots/chrono-handoff.png
 python scripts/_shot_window.py chrono-handoff -o <path>.png
+python scripts/_shot_window.py --pid <daemon pid>       # daemon 跑在 python.exe 里
+python scripts/_shot_window.py --title chrono-handoff   # 精确标题匹配
 ```
+
+**为什么要 `--pid` / `--title`：** 窗口原来只按进程名找，而 `chrono daemon --window`
+跑在 `python.exe` 里，于是窗口明明在屏幕上，工具却答「no visible window found for
+process 'chrono-handoff'」。三个选择器各有用途：
+
+| 选择器 | 用什么时候 | 为什么不能互相代替 |
+|---|---|---|
+| 进程名（默认） | 冻结侧车 `chrono-core.exe`、Tauri 外壳 | 最可靠，但共享解释器宿主（python.exe）根本匹配不到 |
+| `--pid` | daemon 窗口；`~/.chrono-handoff/daemon.json` 里有 pid | pid 不可能被页面标题伪造 |
+| `--title` | 不知道 pid 时 | **精确**匹配，不是子串——`chrono-handoff - Chrome` 正是必须永远不截的那个窗口 |
 
 为什么留着这个工具：有一个布局 bug，**全部断言都放行**（文档不溢出、`body.scrollWidth`
 正确、都“没溢出”），而实际界面把 GO 按钮和五个数字全裁掉了。文字上它是“正常”，
@@ -294,8 +306,8 @@ python scripts/_shot_window.py chrono-handoff -o <path>.png
 - **先 restore。** 最小化的窗口报哨兵矩形（`-21333,-21333` 158x26），不先恢复就只能截到任务栏。
 
 默认输出到 `logs/shots/`（已在 `.gitignore` 里）：截图是本地产物，不应该不小心被提交。
-窗口按**进程名**找，不按标题——浏览器标签页会把自己标题成 `chrono-handoff - <浏览器>`，
-那是个安静的错答案而不是报错。
+按进程名找时**绝不按标题**——浏览器标签页会把自己标题成 `chrono-handoff - <浏览器>`，
+那是个安静的错答案而不是报错；`--title` 是显式请求，且要求精确相等。
 
 ### 几件刻意为之的事
 

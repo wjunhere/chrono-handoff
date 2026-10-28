@@ -28,6 +28,8 @@ Output defaults under ``logs/`` (gitignored) on purpose: a screenshot is a local
 artefact and must not end up in a commit by accident.
 
     python scripts/_shot_window.py chrono-handoff
+    python scripts/_shot_window.py --pid <daemon pid>      # daemon runs as python.exe
+    python scripts/_shot_window.py --title chrono-handoff  # exact title match
     python scripts/_shot_window.py chrono-handoff -o logs/shots/dense-rail.png
 """
 
@@ -109,6 +111,61 @@ def windows_of(exe_name: str) -> list[tuple[int, int]]:
         pid = ctypes.wintypes.DWORD()
         _u.GetWindowThreadProcessId(hwnd, ctypes.byref(pid))
         if Path(_process_name(pid.value)).stem.lower() == target:
+            found.append((int(hwnd), int(pid.value)))
+        return True
+
+    _u.EnumWindows(cb, 0)
+    return found
+
+
+def windows_by_pid(pid: int) -> list[tuple[int, int]]:
+    """Visible top-level windows owned by one process id.
+
+    The honest way to reach a window hosted by a *shared* interpreter.  The cue
+    daemon runs as ``python.exe``, so ``_shot_window.py chrono-handoff`` matched
+    nothing at all -- the widget was on screen and the tool said "no visible
+    window".  Matching by title instead would work here but has the failure mode
+    the module docstring warns about (a browser tab names itself
+    ``chrono-handoff - <browser>``), and a pid cannot be spoofed by a page title.
+    """
+    found: list[tuple[int, int]] = []
+
+    @ctypes.WINFUNCTYPE(ctypes.wintypes.BOOL, ctypes.wintypes.HWND, ctypes.wintypes.LPARAM)
+    def cb(hwnd, _lparam):
+        if not _u.IsWindowVisible(hwnd):
+            return True
+        owner = ctypes.wintypes.DWORD()
+        _u.GetWindowThreadProcessId(hwnd, ctypes.byref(owner))
+        if int(owner.value) == pid:
+            found.append((int(hwnd), int(owner.value)))
+        return True
+
+    _u.EnumWindows(cb, 0)
+    return found
+
+
+def windows_by_title(title: str) -> list[tuple[int, int]]:
+    """Visible top-level windows whose title matches EXACTLY (case-insensitive).
+
+    Exact, not substring, and that is the whole point: "chrono-handoff - Google
+    Chrome" is exactly the wrong window this must never capture, and it is a
+    substring match on the right name.
+    """
+    found: list[tuple[int, int]] = []
+    want = title.strip().lower()
+
+    @ctypes.WINFUNCTYPE(ctypes.wintypes.BOOL, ctypes.wintypes.HWND, ctypes.wintypes.LPARAM)
+    def cb(hwnd, _lparam):
+        if not _u.IsWindowVisible(hwnd):
+            return True
+        n = _u.GetWindowTextLengthW(hwnd)
+        if n == 0:
+            return True
+        buf = ctypes.create_unicode_buffer(n + 1)
+        _u.GetWindowTextW(hwnd, buf, n + 1)
+        if buf.value.strip().lower() == want:
+            pid = ctypes.wintypes.DWORD()
+            _u.GetWindowThreadProcessId(hwnd, ctypes.byref(pid))
             found.append((int(hwnd), int(pid.value)))
         return True
 
@@ -205,19 +262,39 @@ def capture(hwnd: int, path: Path) -> tuple[int, int]:
 
 
 def capture_process(exe_name: str, path: Path, restore_first: bool = True) -> Path:
-    """Capture the (first) visible window of a process, restoring it if minimised."""
+    """Capture the (first) visible window of a process, restoring it if minimised.
+
+    Falls back to an exact-title match on the exe name when no process matches.
+    That fallback is what makes this usable against the cue daemon, which runs as
+    ``python.exe``: the tool used to answer "no visible window found for process
+    'chrono-handoff'" while the widget was plainly on screen.  Exact title, so a
+    browser tab named "chrono-handoff - Chrome" is still never captured.
+    """
     wins = windows_of(exe_name)
+    how = f"process {exe_name!r}"
     if not wins:
-        raise SystemExit(f"no visible window found for process {exe_name!r}")
+        wins = windows_by_title(Path(exe_name).stem)
+        how = f"window title {Path(exe_name).stem!r} (no process matched)"
+    if not wins:
+        raise SystemExit(
+            f"no visible window found for process {exe_name!r}"
+            "\n  the cue daemon runs as python.exe -- find its pid in ~/.chrono-handoff/daemon.json"
+            f"\n  and use: _shot_window.py --pid <pid>"
+            "\n  or select the window by its exact title: --title chrono-handoff"
+        )
     hwnd, pid = wins[0]
     if restore_first:
         restore(hwnd)
     w, h = capture(hwnd, path)
-    print(f"captured {exe_name} pid={pid} hwnd={hwnd} {w}x{h} -> {path}")
+    print(f"captured {how} pid={pid} hwnd={hwnd} {w}x{h} -> {path}")
     return path
 
 
-USAGE = "usage: python scripts/_shot_window.py <exe-name> [-o out.png]"
+USAGE = (
+    "usage: python scripts/_shot_window.py <exe-name> [-o out.png]\n"
+    "       python scripts/_shot_window.py --pid <pid> [-o out.png]\n"
+    "       python scripts/_shot_window.py --title <exact title> [-o out.png]"
+)
 
 
 def main(argv: list[str]) -> int:
@@ -230,13 +307,44 @@ def main(argv: list[str]) -> int:
             return 2
         out = Path(args[i + 1])
         del args[i:i + 2]
-    if not args:
-        print(USAGE)
-        return 2
-    exe = args[0]
+
+    selector = "exe"
+    value = ""
+    for flag, kind in (("--pid", "pid"), ("--title", "title")):
+        if flag in args:
+            i = args.index(flag)
+            if i + 1 >= len(args):
+                print(USAGE)
+                return 2
+            selector, value = kind, args[i + 1]
+            del args[i:i + 2]
+            break
+
+    if selector == "exe":
+        if not args:
+            print(USAGE)
+            return 2
+        value = args[0]
+    label = Path(value).stem if selector == "exe" else f"{selector}-{value}"
     if out is None:
-        out = ROOT / "logs" / "shots" / (Path(exe).stem + ".png")
-    capture_process(exe, out)
+        out = ROOT / "logs" / "shots" / (label + ".png")
+
+    if selector == "pid":
+        wins = windows_by_pid(int(value))
+        if not wins:
+            raise SystemExit(f"no visible window for pid {value}")
+    elif selector == "title":
+        wins = windows_by_title(value)
+        if not wins:
+            raise SystemExit(f"no visible window titled {value!r} (exact match)")
+    else:
+        capture_process(value, out)
+        return 0
+
+    hwnd, pid = wins[0]
+    restore(hwnd)
+    w, h = capture(hwnd, out)
+    print(f"captured hwnd={hwnd} pid={pid} {w}x{h} -> {out}")
     return 0
 
 
