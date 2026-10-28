@@ -49,6 +49,7 @@ os.environ.setdefault("CHRONO_HOME", str(ROOT / "logs" / "_home"))
 
 import _wininput  # noqa: E402
 
+from chrono_handoff import CONTRACT_VERSION  # noqa: E402
 from chrono_handoff.conductor import Conductor  # noqa: E402
 from chrono_handoff.mcp_server import ConductorClient  # noqa: E402
 from chrono_handoff.webui import CuePanel  # noqa: E402
@@ -543,6 +544,31 @@ def phase_page_pointer() -> None:
         def page_line(fragment: str) -> str:
             return next((l for l in text.splitlines() if fragment in l), "(no line)")
 
+        def live_guard() -> str:
+            """The live version-guard line, whatever it says, plus a hint if it refused.
+
+            Without this a failing check printed `(no line)`, which named neither
+            the cause nor the cure.  The two cases it can hit are different, and
+            the message has to tell them apart:
+
+            * the page refused the conductor it attached to -- the reason is on
+              this line; a common local cause is a **stale frozen sidecar** left in
+              `target/debug/` from an older contract, which the shell starts in
+              preference to the source one;
+            * the page never reported at all, which means the shell never ran its
+              self-check.
+            """
+            line = next((l.strip() for l in text.splitlines() if "guard live note=" in l), "")
+            if not line:
+                return "(the page never reported its live guard)"
+            if 'note=""' not in line:
+                return (line + f"\n         -> the shell attached to a conductor declaring a "
+                        f"different contract than {CONTRACT_VERSION}; if a frozen "
+                        "target/debug/chrono-core.exe exists from an older build, it "
+                        "wins over the source conductor -- rebuild it (desktop/sidecar/"
+                        "build.py) or move it aside")
+            return line
+
         for label, fragment in (
             ("SE grip drag resizes by exactly the drag", "grip drag ok=true"),
             ("title-bar drag moves by exactly the drag", "title drag ok=true"),
@@ -551,13 +577,22 @@ def phase_page_pointer() -> None:
             # The version guard, in the real page, with the real conductor: the
             # live verdict has to be "this conductor is mine", and the branches a
             # working install cannot reach are driven directly.
-            ("the page accepts the conductor it is running with", 'guard live note="" contract=2'),
+            #
+            # The contract number comes from the source, not from a literal: it
+            # was written as `contract=2`, and the two bumps since (3 for the
+            # queue, 4 for `none` = reminder-only) left it pointing at a number
+            # the page no longer reports.  A test that spells out a value the
+            # code derives is a test that goes red on an unrelated change and
+            # teaches people to ignore it.
+            ("the page accepts the conductor it is running with",
+             f'guard live note="" contract={CONTRACT_VERSION}'),
             ("the version guard accepts a matching contract", 'guard same-build=""'),
             ("...refuses a contract from another build", 'guard other-build="界面与 conductor 不是同一次构建'),
             ("...passes a not-writable reason through", 'guard not-writable="why-not"'),
             ("...refuses a conductor that declares none", 'guard unanswered="界面与'),
         ):
-            check(label, fragment in text, page_line(fragment.split(" ok")[0]))
+            detail = live_guard() if "live note" in fragment else page_line(fragment.split(" ok")[0])
+            check(label, fragment in text, detail)
 
         # The update seam, in the real shell, driven through the page.  What is
         # asserted is that it *answers with something real* -- not which phase:
