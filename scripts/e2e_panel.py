@@ -333,6 +333,21 @@ def main() -> int:
               h3.get("current_run") == r2["run_id"], f"current={h3.get('current_run')}")
         check("the panel reports the queue so the operator knows one is coming",
               r3["run_id"] in (h3.get("queued") or []), f"queued={h3.get('queued')}")
+        # A queued cue is PENDING, like an armed-but-unstarted one, and must not
+        # count as holding the screen.  It did: `_is_live` only asked "is the
+        # status terminal?", so with three cues the fallback in `_pick_current`
+        # answered the *third*, still-queued run as current the moment the
+        # remembered one ended -- the page would have painted an unarmed cue's
+        # instruction over a live grid.  Both halves are checked: the predicate,
+        # and what the panel answers when it has to pick without a live memory.
+        check("a queued cue is not a cue holding the screen",
+              panel._is_live(r3["run_id"]) is False, f"_is_live({r3['run_id']})={panel._is_live(r3['run_id'])}")
+        with panel._lock:
+            panel._current_run = ""      # forget what is on screen, as a restarted page would
+        h3b = get(base + "/api/health")
+        check("...so picking from scratch lands on the running cue, not the queue",
+              h3b.get("current_run") == r2["run_id"],
+              f"current={h3b.get('current_run')} queued={h3b.get('queued')}")
         s3 = get(base + "/api/schedule?run_id=" + r3["run_id"])
         check("a queued cue publishes no grid (it has none yet)",
               s3.get("status") == "pending" and not s3.get("beats"),

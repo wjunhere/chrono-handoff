@@ -489,12 +489,22 @@ class CuePanel:
         Judged on the *status*, not on the tail: the page keeps a finished cue's
         last grid up while its tail is still sounding (`goIdle` waits for the
         final beat), and that is the page's decision, not a claim on the queue.
+
+        A run that is *held back* is not live, even though it is PENDING like an
+        armed-but-unstarted one: it has no grid, so there is nothing to render,
+        and letting it count as live makes it shadow the cue that is actually
+        playing.  Measured with three cues: as soon as the remembered run had
+        ended, `/api/health` answered with the *third*, still-queued run id while
+        the second was counting -- the page would have painted an unarmed cue's
+        instruction over a live grid.
         """
         try:
             run = self.conductor.get(run_id)
         except Exception:
             return False
         if run is None:
+            return False
+        if getattr(run, "queued_behind", None):
             return False
         try:
             status = run.status.value if hasattr(run.status, "value") else str(run.status)
