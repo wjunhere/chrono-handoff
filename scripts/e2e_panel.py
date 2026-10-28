@@ -14,6 +14,7 @@ import json
 import os
 import re
 import sys
+import threading
 import time
 import urllib.error
 import urllib.request
@@ -419,6 +420,40 @@ def main() -> int:
                   f"$defs={sorted(defs)}")
         except ImportError:
             print("  [SKIP] MCP not installed; tool schemas not published", flush=True)
+
+        # ---- 11e. a prepared cue reaches the page at once -----------------
+        #
+        # `prepare_only` is the "get ready, the agent decides when to start"
+        # flow, and it is the one path that never arms anything -- so `on_armed`
+        # cannot announce it and the page depended on the long-poll timing out.
+        # Measured on the native window: a prepared cue appeared after ~25 s,
+        # which is the poll budget, not a notification.  The page must be told
+        # when the cue is submitted, not when the poll gives up.
+        gen = panel.wait_for_armed(0.5, 0).get("generation", 0)
+        box: dict = {}
+
+        def poll() -> None:
+            """What the page is doing while the cue is prepared: blocking."""
+            started = time.time()
+            box["res"] = panel.wait_for_armed(10.0, gen)
+            box["dt"] = time.time() - started
+
+        th = threading.Thread(target=poll, daemon=True)
+        th.start()
+        time.sleep(0.4)                      # the page is now parked on its long poll
+        prepared = conductor.cue(instruction="armed, not started", target_in_s=5.0,
+                                lead_s=2.0, ioi_ms=300, tail_beats=1, expect_source="none",
+                                duration_s=10, open_panel=False, paused=True)
+        th.join(timeout=12.0)
+        res = box.get("res") or {}
+        waited = box.get("dt", 99.0)
+        check("a prepared cue reaches a page that is already polling",
+              res.get("run_id") == prepared["run_id"] and waited < 2.0,
+              f"run={res.get('run_id')} after {waited:.2f}s (the poll budget was 10s)")
+        check("...and it is the armed cue the panel now shows",
+              panel.current_run() == prepared["run_id"],
+              f"current={panel.current_run()} status={conductor.status(prepared['run_id'])['status']}")
+        conductor.cancel(prepared["run_id"], "e2e_cleanup")
 
 
         # ---- 12. the bind path must not ask DNS who we are --------------

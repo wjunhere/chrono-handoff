@@ -126,13 +126,23 @@ class CuePanel:
             subscribe(self._on_event)
 
     def _on_event(self, run: Any, event: Any) -> None:
-        """Re-announce the current cue when the queue changes.
+        """Re-announce the current cue when the page has something new to read.
 
-        Only ``queued``/``queue_released`` need this: the page re-reads
-        ``queued`` from the reply and repaints the "N more coming" line.  Every
-        other event is already handled by the page's own event poll.
+        Two kinds need this, for the same reason: neither produces an arm event,
+        and `on_armed` is the only other thing that wakes a long-poll.
+
+        * ``queued``/``queue_released`` -- the page repaints the "N more coming"
+          line from the reply.
+        * ``submitted`` -- a cue prepared with ``prepare_only`` is submitted but
+          never armed, so the human told to get ready saw nothing until the
+          25 s poll expired.  Measured on the native window: a prepared cue
+          appeared after ~25 s, i.e. exactly when the poll timed out.  The
+          notification carries `current_run()`, so a *queued* cue still does not
+          steal the screen -- the page is told about the cue that is on it.
+
+        Every other event is already handled by the page's own event poll.
         """
-        if getattr(event, "kind", "") not in ("queued", "queue_released"):
+        if getattr(event, "kind", "") not in ("queued", "queue_released", "submitted"):
             return
         rid = self.current_run()
         if not rid:
